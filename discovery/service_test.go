@@ -7,21 +7,22 @@ SPDX-License-Identifier: Apache-2.0
 package discovery
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric-protos-go/discovery"
+	"github.com/hyperledger/fabric-protos-go/gossip"
 	"github.com/hyperledger/fabric/gossip/api"
 	gcommon "github.com/hyperledger/fabric/gossip/common"
 	gdisc "github.com/hyperledger/fabric/gossip/discovery"
-	"github.com/hyperledger/fabric/protos/common"
-	"github.com/hyperledger/fabric/protos/discovery"
-	"github.com/hyperledger/fabric/protos/gossip"
+	"github.com/hyperledger/fabric/gossip/protoext"
+	"github.com/hyperledger/fabric/protoutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"golang.org/x/net/context"
 )
 
 func TestConfig(t *testing.T) {
@@ -211,8 +212,8 @@ func TestService(t *testing.T) {
 	}
 	// EligibleForService for an "empty" channel
 	mockSup.On("EligibleForService", "", mock.Anything).Return(nil).Once()
-	mockSup.On("PeersAuthorizedByCriteria", gcommon.ChainID("channelWithAccessGranted")).Return(peersInChannelView, nil).Once()
-	mockSup.On("PeersAuthorizedByCriteria", gcommon.ChainID("channelWithSomeProblem")).Return(nil, errors.New("an error occurred")).Once()
+	mockSup.On("PeersAuthorizedByCriteria", gcommon.ChannelID("channelWithAccessGranted")).Return(peersInChannelView, nil).Once()
+	mockSup.On("PeersAuthorizedByCriteria", gcommon.ChannelID("channelWithSomeProblem")).Return(nil, errors.New("an error occurred")).Once()
 	mockSup.On("Peers").Return(peersInMembershipView).Twice()
 	mockSup.On("IdentityInfo").Return(api.PeerIdentitySet{
 		idInfo(0, "O2"), idInfo(1, "O2"), idInfo(2, "O3"),
@@ -241,6 +242,7 @@ func TestService(t *testing.T) {
 		},
 	}
 	resp, err = service.Discover(ctx, toSignedRequest(req))
+	assert.NoError(t, err)
 	expectedChannelResponse := &discovery.PeerMembershipResult{
 		PeersByOrg: map[string]*discovery.Peers{
 			"O2": {
@@ -329,19 +331,19 @@ func TestValidateStructure(t *testing.T) {
 	// Scenarios I-V without TLS, scenarios VI onwards TLS
 
 	// Scenario I: Nil request
-	res, err := validateStructure(context.Background(), nil, "", false, extractHash)
+	res, err := validateStructure(context.Background(), nil, false, extractHash)
 	assert.Nil(t, res)
 	assert.Equal(t, "nil request", err.Error())
 
 	// Scenario II: Malformed envelope
 	res, err = validateStructure(context.Background(), &discovery.SignedRequest{
 		Payload: []byte{1, 2, 3},
-	}, "", false, extractHash)
+	}, false, extractHash)
 	assert.Nil(t, res)
 	assert.Contains(t, err.Error(), "failed parsing request")
 
 	// Scenario III: Empty request
-	res, err = validateStructure(context.Background(), &discovery.SignedRequest{}, "", false, extractHash)
+	res, err = validateStructure(context.Background(), &discovery.SignedRequest{}, false, extractHash)
 	assert.Nil(t, res)
 	assert.Equal(t, "access denied, no authentication info in request", err.Error())
 
@@ -352,7 +354,7 @@ func TestValidateStructure(t *testing.T) {
 	b, _ := proto.Marshal(req)
 	res, err = validateStructure(context.Background(), &discovery.SignedRequest{
 		Payload: b,
-	}, "", false, extractHash)
+	}, false, extractHash)
 	assert.Nil(t, res)
 	assert.Equal(t, "access denied, client identity wasn't supplied", err.Error())
 
@@ -365,7 +367,7 @@ func TestValidateStructure(t *testing.T) {
 	b, _ = proto.Marshal(req)
 	res, err = validateStructure(context.Background(), &discovery.SignedRequest{
 		Payload: b,
-	}, "", false, extractHash)
+	}, false, extractHash)
 	assert.NoError(t, err)
 	// Ensure returned request is as before serialization to bytes
 	assert.True(t, proto.Equal(req, res))
@@ -379,7 +381,7 @@ func TestValidateStructure(t *testing.T) {
 	b, _ = proto.Marshal(req)
 	res, err = validateStructure(context.Background(), &discovery.SignedRequest{
 		Payload: b,
-	}, "", true, extractHash)
+	}, true, extractHash)
 	assert.Nil(t, res)
 	assert.Equal(t, "client didn't send a TLS certificate", err.Error())
 
@@ -397,7 +399,7 @@ func TestValidateStructure(t *testing.T) {
 	b, _ = proto.Marshal(req)
 	res, err = validateStructure(context.Background(), &discovery.SignedRequest{
 		Payload: b,
-	}, "", true, extractHash)
+	}, true, extractHash)
 	assert.Nil(t, res)
 	assert.Equal(t, "client claimed TLS hash doesn't match computed TLS hash from gRPC stream", err.Error())
 
@@ -415,7 +417,9 @@ func TestValidateStructure(t *testing.T) {
 	b, _ = proto.Marshal(req)
 	res, err = validateStructure(context.Background(), &discovery.SignedRequest{
 		Payload: b,
-	}, "", true, extractHash)
+	}, true, extractHash)
+	assert.NoError(t, err)
+	assert.NotNil(t, res)
 }
 
 func TestValidateCCQuery(t *testing.T) {
@@ -490,7 +494,7 @@ func (ms *mockSupport) ChannelExists(channel string) bool {
 	return ms.Called(channel).Get(0).(bool)
 }
 
-func (ms *mockSupport) PeersOfChannel(channel gcommon.ChainID) gdisc.Members {
+func (ms *mockSupport) PeersOfChannel(channel gcommon.ChannelID) gdisc.Members {
 	panic("not implemented")
 }
 
@@ -498,7 +502,7 @@ func (ms *mockSupport) Peers() gdisc.Members {
 	return ms.Called().Get(0).(gdisc.Members)
 }
 
-func (ms *mockSupport) PeersForEndorsement(channel gcommon.ChainID, interest *discovery.ChaincodeInterest) (*discovery.EndorsementDescriptor, error) {
+func (ms *mockSupport) PeersForEndorsement(channel gcommon.ChannelID, interest *discovery.ChaincodeInterest) (*discovery.EndorsementDescriptor, error) {
 	cc := interest.Chaincodes[0].Name
 	args := ms.Called(cc)
 	if args.Get(0) == nil {
@@ -507,7 +511,7 @@ func (ms *mockSupport) PeersForEndorsement(channel gcommon.ChainID, interest *di
 	return args.Get(0).(*discovery.EndorsementDescriptor), args.Error(1)
 }
 
-func (ms *mockSupport) PeersAuthorizedByCriteria(chainID gcommon.ChainID, interest *discovery.ChaincodeInterest) (gdisc.Members, error) {
+func (ms *mockSupport) PeersAuthorizedByCriteria(chainID gcommon.ChannelID, interest *discovery.ChaincodeInterest) (gdisc.Members, error) {
 	args := ms.Called(chainID)
 	if args.Error(1) != nil {
 		return nil, args.Error(1)
@@ -515,11 +519,11 @@ func (ms *mockSupport) PeersAuthorizedByCriteria(chainID gcommon.ChainID, intere
 	return args.Get(0).(gdisc.Members), args.Error(1)
 }
 
-func (*mockSupport) Chaincodes(id gcommon.ChainID) []*gossip.Chaincode {
+func (*mockSupport) Chaincodes(id gcommon.ChannelID) []*gossip.Chaincode {
 	panic("implement me")
 }
 
-func (ms *mockSupport) EligibleForService(channel string, data common.SignedData) error {
+func (ms *mockSupport) EligibleForService(channel string, data protoutil.SignedData) error {
 	return ms.Called(channel, data).Error(0)
 }
 
@@ -551,7 +555,7 @@ func stateInfoMsg(id int) gdisc.NetworkMember {
 			StateInfo: si,
 		},
 	}
-	sm, _ := gm.NoopSign()
+	sm, _ := protoext.NoopSign(gm)
 	return gdisc.NetworkMember{
 		PKIid:    pkiID,
 		Envelope: sm.Envelope,
@@ -572,7 +576,7 @@ func aliveMsg(id int) gdisc.NetworkMember {
 			AliveMsg: am,
 		},
 	}
-	sm, _ := gm.NoopSign()
+	sm, _ := protoext.NoopSign(gm)
 	return gdisc.NetworkMember{
 		PKIid:    pkiID,
 		Endpoint: endpoint,

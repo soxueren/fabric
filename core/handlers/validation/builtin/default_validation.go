@@ -10,15 +10,22 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/hyperledger/fabric-protos-go/common"
 	commonerrors "github.com/hyperledger/fabric/common/errors"
-	"github.com/hyperledger/fabric/core/handlers/validation/api"
+	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/core/committer/txvalidator/v20/plugindispatcher"
+	validation "github.com/hyperledger/fabric/core/handlers/validation/api"
 	. "github.com/hyperledger/fabric/core/handlers/validation/api/capabilities"
 	. "github.com/hyperledger/fabric/core/handlers/validation/api/identities"
 	. "github.com/hyperledger/fabric/core/handlers/validation/api/policies"
 	. "github.com/hyperledger/fabric/core/handlers/validation/api/state"
-	"github.com/hyperledger/fabric/protos/common"
+	v12 "github.com/hyperledger/fabric/core/handlers/validation/builtin/v12"
+	v13 "github.com/hyperledger/fabric/core/handlers/validation/builtin/v13"
+	v20 "github.com/hyperledger/fabric/core/handlers/validation/builtin/v20"
 	"github.com/pkg/errors"
 )
+
+var logger = flogging.MustGetLogger("vscc")
 
 type DefaultValidationFactory struct {
 }
@@ -28,12 +35,15 @@ func (*DefaultValidationFactory) New() validation.Plugin {
 }
 
 type DefaultValidation struct {
-	TxValidator TransactionValidator
+	Capabilities    Capabilities
+	TxValidatorV1_2 TransactionValidator
+	TxValidatorV1_3 TransactionValidator
+	TxValidatorV2_0 TransactionValidator
 }
 
 //go:generate mockery -dir . -name TransactionValidator -case underscore -output mocks/
 type TransactionValidator interface {
-	Validate(txData []byte, policy []byte) commonerrors.TxValidationError
+	Validate(block *common.Block, namespace string, txPosition int, actionPosition int, policy []byte) commonerrors.TxValidationError
 }
 
 func (v *DefaultValidation) Validate(block *common.Block, namespace string, txPosition int, actionPosition int, contextData ...validation.ContextDatum) error {
@@ -54,7 +64,22 @@ func (v *DefaultValidation) Validate(block *common.Block, namespace string, txPo
 	if block.Header == nil {
 		return errors.Errorf("no block header")
 	}
-	err := v.TxValidator.Validate(block.Data.Data[txPosition], serializedPolicy.Bytes())
+
+	var err error
+	switch {
+	case v.Capabilities.V2_0Validation():
+		err = v.TxValidatorV2_0.Validate(block, namespace, txPosition, actionPosition, serializedPolicy.Bytes())
+
+	case v.Capabilities.V1_3Validation():
+		err = v.TxValidatorV1_3.Validate(block, namespace, txPosition, actionPosition, serializedPolicy.Bytes())
+
+	case v.Capabilities.V1_2Validation():
+		fallthrough
+
+	default:
+		err = v.TxValidatorV1_2.Validate(block, namespace, txPosition, actionPosition, serializedPolicy.Bytes())
+	}
+
 	logger.Debugf("block %d, namespace: %s, tx %d validation results is: %v", block.Header.Number, namespace, txPosition, err)
 	return convertErrorTypeOrPanic(err)
 }
@@ -77,10 +102,11 @@ func convertErrorTypeOrPanic(err error) error {
 
 func (v *DefaultValidation) Init(dependencies ...validation.Dependency) error {
 	var (
-		d  IdentityDeserializer
-		c  Capabilities
-		sf StateFetcher
-		pe PolicyEvaluator
+		d   IdentityDeserializer
+		c   Capabilities
+		sf  StateFetcher
+		pe  PolicyEvaluator
+		cor plugindispatcher.CollectionResources
 	)
 	for _, dep := range dependencies {
 		if deserializer, isIdentityDeserializer := dep.(IdentityDeserializer); isIdentityDeserializer {
@@ -95,6 +121,9 @@ func (v *DefaultValidation) Init(dependencies ...validation.Dependency) error {
 		if policyEvaluator, isPolicyFetcher := dep.(PolicyEvaluator); isPolicyFetcher {
 			pe = policyEvaluator
 		}
+		if collectionResources, isCollectionResources := dep.(plugindispatcher.CollectionResources); isCollectionResources {
+			cor = collectionResources
+		}
 	}
 	if sf == nil {
 		return errors.New("stateFetcher not passed in init")
@@ -108,11 +137,14 @@ func (v *DefaultValidation) Init(dependencies ...validation.Dependency) error {
 	if pe == nil {
 		return errors.New("policy fetcher not passed in init")
 	}
-	v.TxValidator = &ValidatorOneValidSignature{
-		policyEvaluator: pe,
-		deserializer:    d,
-		stateFetcher:    sf,
-		capabilities:    c,
+	if cor == nil {
+		return errors.New("collection resources not passed in init")
 	}
+
+	v.Capabilities = c
+	v.TxValidatorV1_2 = v12.New(c, sf, d, pe)
+	v.TxValidatorV1_3 = v13.New(c, sf, d, pe)
+	v.TxValidatorV2_0 = v20.New(c, sf, d, pe, cor)
+
 	return nil
 }

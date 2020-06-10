@@ -10,13 +10,13 @@ import (
 	"errors"
 	"testing"
 
+	gossip2 "github.com/hyperledger/fabric-protos-go/gossip"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric-protos-go/transientstore"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/transientstore"
+	privdatacommon "github.com/hyperledger/fabric/gossip/privdata/common"
 	"github.com/hyperledger/fabric/gossip/privdata/mocks"
-	"github.com/hyperledger/fabric/protos/common"
-	gossip2 "github.com/hyperledger/fabric/protos/gossip"
-	"github.com/hyperledger/fabric/protos/ledger/rwset"
-	transientstore2 "github.com/hyperledger/fabric/protos/transientstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -27,68 +27,60 @@ import (
 	hence data should be looked up directly from transient store
 */
 func TestNewDataRetriever_GetDataFromTransientStore(t *testing.T) {
-	t.Parallel()
-	dataStore := &mocks.DataStore{}
+	committer := &mocks.Committer{}
 
-	rwSetScanner := &mocks.RWSetScanner{}
+	store := newTransientStore(t)
+	defer store.tearDown()
+
 	namespace := "testChaincodeName1"
 	collectionName := "testCollectionName"
+	txID := "testTxID"
 
-	rwSetScanner.On("Close")
-	rwSetScanner.On("NextWithConfig").Return(&transientstore.EndorserPvtSimulationResultsWithConfig{
-		ReceivedAtBlockHeight:          2,
-		PvtSimulationResultsWithConfig: nil,
-	}, nil).Once().On("NextWithConfig").Return(&transientstore.EndorserPvtSimulationResultsWithConfig{
-		ReceivedAtBlockHeight: 2,
-		PvtSimulationResultsWithConfig: &transientstore2.TxPvtReadWriteSetWithConfigInfo{
-			PvtRwset: &rwset.TxPvtReadWriteSet{
-				DataModel: rwset.TxReadWriteSet_KV,
-				NsPvtRwset: []*rwset.NsPvtReadWriteSet{
-					pvtReadWriteSet(namespace, collectionName, []byte{1, 2}),
-					pvtReadWriteSet(namespace, collectionName, []byte{3, 4}),
-				},
+	committer.On("LedgerHeight").Return(uint64(1), nil)
+
+	retriever := NewDataRetriever(store.store, committer)
+
+	store.Persist(txID, 2, &transientstore.TxPvtReadWriteSetWithConfigInfo{
+		PvtRwset: &rwset.TxPvtReadWriteSet{
+			DataModel: rwset.TxReadWriteSet_KV,
+			NsPvtRwset: []*rwset.NsPvtReadWriteSet{
+				pvtReadWriteSet(namespace, collectionName, []byte{1, 2}),
+				pvtReadWriteSet(namespace, collectionName, []byte{3, 4}),
 			},
-			CollectionConfigs: map[string]*common.CollectionConfigPackage{
-				namespace: {
-					Config: []*common.CollectionConfig{
-						{
-							Payload: &common.CollectionConfig_StaticCollectionConfig{
-								StaticCollectionConfig: &common.StaticCollectionConfig{
-									Name: collectionName,
-								},
+		},
+		CollectionConfigs: map[string]*peer.CollectionConfigPackage{
+			namespace: {
+				Config: []*peer.CollectionConfig{
+					{
+						Payload: &peer.CollectionConfig_StaticCollectionConfig{
+							StaticCollectionConfig: &peer.StaticCollectionConfig{
+								Name: collectionName,
 							},
 						},
 					},
 				},
 			},
 		},
-	}, nil).
-		Once(). // return only once results, next call should return and empty result
-		On("NextWithConfig").Return(nil, nil)
-
-	dataStore.On("LedgerHeight").Return(uint64(1), nil)
-	dataStore.On("GetTxPvtRWSetByTxid", "testTxID", mock.Anything).Return(rwSetScanner, nil)
-
-	retriever := NewDataRetriever(dataStore)
+	})
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   2,
-		TxId:       "testTxID",
+		TxId:       txID,
 		SeqInBlock: 1,
 	}}, 2)
 
 	assertion := assert.New(t)
 	assertion.NoError(err)
 	assertion.NotEmpty(rwSets)
-	dig2pvtRWSet := rwSets[DigKey{
+	dig2pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   2,
-		TxId:       "testTxID",
+		TxId:       txID,
 		SeqInBlock: 1,
 	}]
 	assertion.NotNil(dig2pvtRWSet)
@@ -109,8 +101,10 @@ func TestNewDataRetriever_GetDataFromTransientStore(t *testing.T) {
 	from the ledger rather than transient store as data being committed
 */
 func TestNewDataRetriever_GetDataFromLedger(t *testing.T) {
-	t.Parallel()
-	dataStore := &mocks.DataStore{}
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
 
 	namespace := "testChaincodeName1"
 	collectionName := "testCollectionName"
@@ -126,18 +120,18 @@ func TestNewDataRetriever_GetDataFromLedger(t *testing.T) {
 		SeqInBlock: 1,
 	}}
 
-	dataStore.On("LedgerHeight").Return(uint64(10), nil)
-	dataStore.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
+	committer.On("LedgerHeight").Return(uint64(10), nil)
+	committer.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
 
 	historyRetreiver := &mocks.ConfigHistoryRetriever{}
 	historyRetreiver.On("MostRecentCollectionConfigBelow", mock.Anything, namespace).Return(newCollectionConfig(collectionName), nil)
-	dataStore.On("GetConfigHistoryRetriever").Return(historyRetreiver, nil)
+	committer.On("GetConfigHistoryRetriever").Return(historyRetreiver, nil)
 
-	retriever := NewDataRetriever(dataStore)
+	retriever := NewDataRetriever(store.store, committer)
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query ledger for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   uint64(5),
@@ -148,7 +142,7 @@ func TestNewDataRetriever_GetDataFromLedger(t *testing.T) {
 	assertion := assert.New(t)
 	assertion.NoError(err)
 	assertion.NotEmpty(rwSets)
-	pvtRWSet := rwSets[DigKey{
+	pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   5,
@@ -167,21 +161,23 @@ func TestNewDataRetriever_GetDataFromLedger(t *testing.T) {
 }
 
 func TestNewDataRetriever_FailGetPvtDataFromLedger(t *testing.T) {
-	t.Parallel()
-	dataStore := &mocks.DataStore{}
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
 
 	namespace := "testChaincodeName1"
 	collectionName := "testCollectionName"
 
-	dataStore.On("LedgerHeight").Return(uint64(10), nil)
-	dataStore.On("GetPvtDataByNum", uint64(5), mock.Anything).
+	committer.On("LedgerHeight").Return(uint64(10), nil)
+	committer.On("GetPvtDataByNum", uint64(5), mock.Anything).
 		Return(nil, errors.New("failing retrieving private data"))
 
-	retriever := NewDataRetriever(dataStore)
+	retriever := NewDataRetriever(store.store, committer)
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   uint64(5),
@@ -195,8 +191,10 @@ func TestNewDataRetriever_FailGetPvtDataFromLedger(t *testing.T) {
 }
 
 func TestNewDataRetriever_GetOnlyRelevantPvtData(t *testing.T) {
-	t.Parallel()
-	dataStore := &mocks.DataStore{}
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
 
 	namespace := "testChaincodeName1"
 	collectionName := "testCollectionName"
@@ -214,17 +212,17 @@ func TestNewDataRetriever_GetOnlyRelevantPvtData(t *testing.T) {
 		SeqInBlock: 1,
 	}}
 
-	dataStore.On("LedgerHeight").Return(uint64(10), nil)
-	dataStore.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
+	committer.On("LedgerHeight").Return(uint64(10), nil)
+	committer.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
 	historyRetreiver := &mocks.ConfigHistoryRetriever{}
 	historyRetreiver.On("MostRecentCollectionConfigBelow", mock.Anything, namespace).Return(newCollectionConfig(collectionName), nil)
-	dataStore.On("GetConfigHistoryRetriever").Return(historyRetreiver, nil)
+	committer.On("GetConfigHistoryRetriever").Return(historyRetreiver, nil)
 
-	retriever := NewDataRetriever(dataStore)
+	retriever := NewDataRetriever(store.store, committer)
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   uint64(5),
@@ -235,7 +233,7 @@ func TestNewDataRetriever_GetOnlyRelevantPvtData(t *testing.T) {
 	assertion := assert.New(t)
 	assertion.NoError(err)
 	assertion.NotEmpty(rwSets)
-	pvtRWSet := rwSets[DigKey{
+	pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  namespace,
 		Collection: collectionName,
 		BlockSeq:   5,
@@ -254,8 +252,10 @@ func TestNewDataRetriever_GetOnlyRelevantPvtData(t *testing.T) {
 }
 
 func TestNewDataRetriever_GetMultipleDigests(t *testing.T) {
-	t.Parallel()
-	dataStore := &mocks.DataStore{}
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
 
 	ns1, ns2 := "testChaincodeName1", "testChaincodeName2"
 	col1, col2 := "testCollectionName1", "testCollectionName2"
@@ -299,18 +299,18 @@ func TestNewDataRetriever_GetMultipleDigests(t *testing.T) {
 		},
 	}
 
-	dataStore.On("LedgerHeight").Return(uint64(10), nil)
-	dataStore.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
+	committer.On("LedgerHeight").Return(uint64(10), nil)
+	committer.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
 	historyRetreiver := &mocks.ConfigHistoryRetriever{}
 	historyRetreiver.On("MostRecentCollectionConfigBelow", mock.Anything, ns1).Return(newCollectionConfig(col1), nil)
 	historyRetreiver.On("MostRecentCollectionConfigBelow", mock.Anything, ns2).Return(newCollectionConfig(col2), nil)
-	dataStore.On("GetConfigHistoryRetriever").Return(historyRetreiver, nil)
+	committer.On("GetConfigHistoryRetriever").Return(historyRetreiver, nil)
 
-	retriever := NewDataRetriever(dataStore)
+	retriever := NewDataRetriever(store.store, committer)
 
 	// Request digest for private data which is greater than current ledger height
 	// to make it query transient store for missed private data
-	rwSets, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   uint64(5),
@@ -329,7 +329,7 @@ func TestNewDataRetriever_GetMultipleDigests(t *testing.T) {
 	assertion.NotEmpty(rwSets)
 	assertion.Equal(2, len(rwSets))
 
-	pvtRWSet := rwSets[DigKey{
+	pvtRWSet := rwSets[privdatacommon.DigKey{
 		Namespace:  ns1,
 		Collection: col1,
 		BlockSeq:   5,
@@ -344,7 +344,7 @@ func TestNewDataRetriever_GetMultipleDigests(t *testing.T) {
 		mergedRWSet = append(mergedRWSet, rws...)
 	}
 
-	pvtRWSet = rwSets[DigKey{
+	pvtRWSet = rwSets[privdatacommon.DigKey{
 		Namespace:  ns2,
 		Collection: col2,
 		BlockSeq:   5,
@@ -360,13 +360,223 @@ func TestNewDataRetriever_GetMultipleDigests(t *testing.T) {
 	assertion.Equal([]byte{1, 2, 3, 4}, mergedRWSet)
 }
 
+func TestNewDataRetriever_EmptyWriteSet(t *testing.T) {
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
+
+	ns1 := "testChaincodeName1"
+	col1 := "testCollectionName1"
+
+	result := []*ledger.TxPvtData{
+		{
+			SeqInBlock: 1,
+		},
+	}
+
+	committer.On("LedgerHeight").Return(uint64(10), nil)
+	committer.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
+	historyRetreiver := &mocks.ConfigHistoryRetriever{}
+	historyRetreiver.On("MostRecentCollectionConfigBelow", mock.Anything, ns1).Return(newCollectionConfig(col1), nil)
+	committer.On("GetConfigHistoryRetriever").Return(historyRetreiver, nil)
+
+	retriever := NewDataRetriever(store.store, committer)
+
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+		Namespace:  ns1,
+		Collection: col1,
+		BlockSeq:   uint64(5),
+		TxId:       "testTxID",
+		SeqInBlock: 1,
+	}}, 5)
+
+	assertion := assert.New(t)
+	assertion.NoError(err)
+	assertion.NotEmpty(rwSets)
+
+	pvtRWSet := rwSets[privdatacommon.DigKey{
+		Namespace:  ns1,
+		Collection: col1,
+		BlockSeq:   5,
+		TxId:       "testTxID",
+		SeqInBlock: 1,
+	}]
+	assertion.NotEmpty(pvtRWSet)
+	assertion.Empty(pvtRWSet.RWSet)
+
+}
+
+func TestNewDataRetriever_FailedObtainConfigHistoryRetriever(t *testing.T) {
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
+
+	ns1 := "testChaincodeName1"
+	col1 := "testCollectionName1"
+
+	result := []*ledger.TxPvtData{
+		{
+			WriteSet: &rwset.TxPvtReadWriteSet{
+				DataModel: rwset.TxReadWriteSet_KV,
+				NsPvtRwset: []*rwset.NsPvtReadWriteSet{
+					pvtReadWriteSet(ns1, col1, []byte{1}),
+					pvtReadWriteSet(ns1, col1, []byte{2}),
+				},
+			},
+			SeqInBlock: 1,
+		},
+	}
+
+	committer.On("LedgerHeight").Return(uint64(10), nil)
+	committer.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
+	committer.On("GetConfigHistoryRetriever").Return(nil, errors.New("failed to obtain ConfigHistoryRetriever"))
+
+	retriever := NewDataRetriever(store.store, committer)
+
+	_, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+		Namespace:  ns1,
+		Collection: col1,
+		BlockSeq:   uint64(5),
+		TxId:       "testTxID",
+		SeqInBlock: 1,
+	}}, 5)
+
+	assertion := assert.New(t)
+	assertion.Contains(err.Error(), "failed to obtain ConfigHistoryRetriever")
+}
+
+func TestNewDataRetriever_NoCollectionConfig(t *testing.T) {
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
+
+	ns1, ns2 := "testChaincodeName1", "testChaincodeName2"
+	col1, col2 := "testCollectionName1", "testCollectionName2"
+
+	result := []*ledger.TxPvtData{
+		{
+			WriteSet: &rwset.TxPvtReadWriteSet{
+				DataModel: rwset.TxReadWriteSet_KV,
+				NsPvtRwset: []*rwset.NsPvtReadWriteSet{
+					pvtReadWriteSet(ns1, col1, []byte{1}),
+					pvtReadWriteSet(ns1, col1, []byte{2}),
+				},
+			},
+			SeqInBlock: 1,
+		},
+		{
+			WriteSet: &rwset.TxPvtReadWriteSet{
+				DataModel: rwset.TxReadWriteSet_KV,
+				NsPvtRwset: []*rwset.NsPvtReadWriteSet{
+					pvtReadWriteSet(ns2, col2, []byte{3}),
+					pvtReadWriteSet(ns2, col2, []byte{4}),
+				},
+			},
+			SeqInBlock: 2,
+		},
+	}
+
+	committer.On("LedgerHeight").Return(uint64(10), nil)
+	committer.On("GetPvtDataByNum", uint64(5), mock.Anything).Return(result, nil)
+	historyRetreiver := &mocks.ConfigHistoryRetriever{}
+	historyRetreiver.On("MostRecentCollectionConfigBelow", mock.Anything, ns1).
+		Return(newCollectionConfig(col1), errors.New("failed to obtain collection config"))
+	historyRetreiver.On("MostRecentCollectionConfigBelow", mock.Anything, ns2).
+		Return(nil, nil)
+	committer.On("GetConfigHistoryRetriever").Return(historyRetreiver, nil)
+
+	retriever := NewDataRetriever(store.store, committer)
+	assertion := assert.New(t)
+
+	_, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+		Namespace:  ns1,
+		Collection: col1,
+		BlockSeq:   uint64(5),
+		TxId:       "testTxID",
+		SeqInBlock: 1,
+	}}, 5)
+	assertion.Error(err)
+	assertion.Contains(err.Error(), "cannot find recent collection config update below block sequence")
+
+	_, _, err = retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+		Namespace:  ns2,
+		Collection: col2,
+		BlockSeq:   uint64(5),
+		TxId:       "testTxID",
+		SeqInBlock: 2,
+	}}, 5)
+	assertion.Error(err)
+	assertion.Contains(err.Error(), "no collection config update below block sequence")
+}
+
+func TestNewDataRetriever_FailedGetLedgerHeight(t *testing.T) {
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
+
+	ns1 := "testChaincodeName1"
+	col1 := "testCollectionName1"
+
+	committer.On("LedgerHeight").Return(uint64(0), errors.New("failed to read ledger height"))
+	retriever := NewDataRetriever(store.store, committer)
+
+	_, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+		Namespace:  ns1,
+		Collection: col1,
+		BlockSeq:   uint64(5),
+		TxId:       "testTxID",
+		SeqInBlock: 1,
+	}}, 5)
+
+	assertion := assert.New(t)
+	assertion.Error(err)
+	assertion.Contains(err.Error(), "failed to read ledger height")
+}
+
+func TestNewDataRetriever_EmptyPvtRWSetInTransientStore(t *testing.T) {
+	committer := &mocks.Committer{}
+
+	store := newTransientStore(t)
+	defer store.tearDown()
+
+	namespace := "testChaincodeName1"
+	collectionName := "testCollectionName"
+
+	committer.On("LedgerHeight").Return(uint64(1), nil)
+
+	retriever := NewDataRetriever(store.store, committer)
+
+	rwSets, _, err := retriever.CollectionRWSet([]*gossip2.PvtDataDigest{{
+		Namespace:  namespace,
+		Collection: collectionName,
+		BlockSeq:   2,
+		TxId:       "testTxID",
+		SeqInBlock: 1,
+	}}, 2)
+
+	assertion := assert.New(t)
+	assertion.NoError(err)
+	assertion.NotEmpty(rwSets)
+	assertion.Empty(rwSets[privdatacommon.DigKey{
+		Namespace:  namespace,
+		Collection: collectionName,
+		BlockSeq:   2,
+		TxId:       "testTxID",
+		SeqInBlock: 1,
+	}])
+}
+
 func newCollectionConfig(collectionName string) *ledger.CollectionConfigInfo {
 	return &ledger.CollectionConfigInfo{
-		CollectionConfig: &common.CollectionConfigPackage{
-			Config: []*common.CollectionConfig{
+		CollectionConfig: &peer.CollectionConfigPackage{
+			Config: []*peer.CollectionConfig{
 				{
-					Payload: &common.CollectionConfig_StaticCollectionConfig{
-						StaticCollectionConfig: &common.StaticCollectionConfig{
+					Payload: &peer.CollectionConfig_StaticCollectionConfig{
+						StaticCollectionConfig: &peer.StaticCollectionConfig{
 							Name: collectionName,
 						},
 					},

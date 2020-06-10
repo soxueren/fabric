@@ -4,13 +4,25 @@ Copyright IBM Corp. All Rights Reserved.
 SPDX-License-Identifier: Apache-2.0
 */
 
+// Package roesources contains resource names used in fabric for ACL checks.
+// Note that some of the checks such as Lscc_INSTALL are "peer wide" (current
+// access checks in peer are based on local MSP). These are not currently
+// covered by resource or default ACLProviders
 package resources
 
-//fabric resources used for ACL checks. Note that some of the checks
-//such as Lscc_INSTALL are "peer wide" (current access checks in peer are
-//based on local MSP). These are not currently covered by resource or default
-//ACLProviders
 const (
+	// _lifecycle resources
+	Lifecycle_InstallChaincode                   = "_lifecycle/InstallChaincode"
+	Lifecycle_QueryInstalledChaincode            = "_lifecycle/QueryInstalledChaincode"
+	Lifecycle_GetInstalledChaincodePackage       = "_lifecycle/GetInstalledChaincodePackage"
+	Lifecycle_QueryInstalledChaincodes           = "_lifecycle/QueryInstalledChaincodes"
+	Lifecycle_ApproveChaincodeDefinitionForMyOrg = "_lifecycle/ApproveChaincodeDefinitionForMyOrg"
+	Lifecycle_QueryApprovedChaincodeDefinition   = "_lifecycle/QueryApprovedChaincodeDefinition"
+	Lifecycle_CommitChaincodeDefinition          = "_lifecycle/CommitChaincodeDefinition"
+	Lifecycle_QueryChaincodeDefinition           = "_lifecycle/QueryChaincodeDefinition"
+	Lifecycle_QueryChaincodeDefinitions          = "_lifecycle/QueryChaincodeDefinitions"
+	Lifecycle_CheckCommitReadiness               = "_lifecycle/CheckCommitReadiness"
+
 	//Lscc resources
 	Lscc_Install                   = "lscc/Install"
 	Lscc_Deploy                    = "lscc/Deploy"
@@ -20,6 +32,7 @@ const (
 	Lscc_GetChaincodeData          = "lscc/GetChaincodeData"
 	Lscc_GetInstantiatedChaincodes = "lscc/GetInstantiatedChaincodes"
 	Lscc_GetInstalledChaincodes    = "lscc/GetInstalledChaincodes"
+	Lscc_GetCollectionsConfig      = "lscc/GetCollectionsConfig"
 
 	//Qscc resources
 	Qscc_GetChainInfo       = "qscc/GetChainInfo"
@@ -29,11 +42,9 @@ const (
 	Qscc_GetBlockByTxID     = "qscc/GetBlockByTxID"
 
 	//Cscc resources
-	Cscc_JoinChain                = "cscc/JoinChain"
-	Cscc_GetConfigBlock           = "cscc/GetConfigBlock"
-	Cscc_GetChannels              = "cscc/GetChannels"
-	Cscc_GetConfigTree            = "cscc/GetConfigTree"
-	Cscc_SimulateConfigTreeUpdate = "cscc/SimulateConfigTreeUpdate"
+	Cscc_JoinChain      = "cscc/JoinChain"
+	Cscc_GetConfigBlock = "cscc/GetConfigBlock"
+	Cscc_GetChannels    = "cscc/GetChannels"
 
 	//Peer resources
 	Peer_Propose              = "peer/Propose"

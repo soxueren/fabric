@@ -18,6 +18,7 @@ import (
 const (
 	keyPrefix     = "s"
 	separatorByte = byte(0)
+	nsStopper     = byte(1)
 )
 
 type compositeKey struct {
@@ -42,9 +43,13 @@ type batch struct {
 	*leveldbhelper.UpdateBatch
 }
 
-func newDBProvider(dbPath string) *dbProvider {
+func newDBProvider(dbPath string) (*dbProvider, error) {
 	logger.Debugf("Opening db for config history: db path = %s", dbPath)
-	return &dbProvider{leveldbhelper.NewProvider(&leveldbhelper.Conf{DBPath: dbPath})}
+	p, err := leveldbhelper.NewProvider(&leveldbhelper.Conf{DBPath: dbPath})
+	if err != nil {
+		return nil, err
+	}
+	return &dbProvider{Provider: p}, nil
 }
 
 func newBatch() *batch {
@@ -93,6 +98,14 @@ func (d *db) entryAt(blockNum uint64, ns, key string) (*compositeKV, error) {
 	}
 	k, v := decodeCompositeKey(keyBytes), valBytes
 	return &compositeKV{k, v}, nil
+}
+
+func (d *db) getNamespaceIterator(ns string) *leveldbhelper.Iterator {
+	nsStartKey := []byte(keyPrefix + ns)
+	nsStartKey = append(nsStartKey, separatorByte)
+	nsEndKey := []byte(keyPrefix + ns)
+	nsEndKey = append(nsEndKey, nsStopper)
+	return d.GetIterator(nsStartKey, nsEndKey)
 }
 
 func encodeCompositeKey(ns, key string, blockNum uint64) []byte {

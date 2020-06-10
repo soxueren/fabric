@@ -12,7 +12,6 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/bookkeeping"
 	"github.com/stretchr/testify/assert"
 )
@@ -23,11 +22,11 @@ func TestExpiryKVEncoding(t *testing.T) {
 	expiryInfo := &expiryInfo{&expiryInfoKey{expiryBlk: 10, committingBlk: 2}, pvtdataKeys}
 	t.Logf("expiryInfo:%s", spew.Sdump(expiryInfo))
 	k, v, err := encodeKV(expiryInfo)
-	testutil.AssertNoError(t, err, "")
+	assert.NoError(t, err)
 	expiryInfo1, err := decodeExpiryInfo(k, v)
-	testutil.AssertNoError(t, err, "")
-	testutil.AssertEquals(t, expiryInfo.expiryInfoKey, expiryInfo1.expiryInfoKey)
-	testutil.AssertEquals(t, expiryInfo.pvtdataKeys, expiryInfo1.pvtdataKeys)
+	assert.NoError(t, err)
+	assert.Equal(t, expiryInfo.expiryInfoKey, expiryInfo1.expiryInfoKey)
+	assert.True(t, proto.Equal(expiryInfo.pvtdataKeys, expiryInfo1.pvtdataKeys), "proto messages are not equal")
 }
 
 func TestExpiryKeeper(t *testing.T) {
@@ -41,9 +40,9 @@ func TestExpiryKeeper(t *testing.T) {
 	expinfo4 := &expiryInfo{&expiryInfoKey{committingBlk: 5, expiryBlk: 17}, buildPvtdataKeysForTest(4, 4)}
 
 	// Insert entries for keys at committingBlk 3
-	expiryKeeper.updateBookkeeping([]*expiryInfo{expinfo1, expinfo2}, nil)
+	expiryKeeper.update([]*expiryInfo{expinfo1, expinfo2}, nil)
 	// Insert entries for keys at committingBlk 4 and 5
-	expiryKeeper.updateBookkeeping([]*expiryInfo{expinfo3, expinfo4}, nil)
+	expiryKeeper.update([]*expiryInfo{expinfo3, expinfo4}, nil)
 
 	// Retrieve entries by expiring block 13, 15, and 17
 	listExpinfo1, _ := expiryKeeper.retrieve(13)
@@ -64,7 +63,7 @@ func TestExpiryKeeper(t *testing.T) {
 	assert.True(t, proto.Equal(expinfo4.pvtdataKeys, listExpinfo3[0].pvtdataKeys))
 
 	// Clear entries for keys expiring at block 13 and 15 and again retrieve by expiring block 13, 15, and 17
-	expiryKeeper.updateBookkeeping(nil, []*expiryInfoKey{expinfo1.expiryInfoKey, expinfo2.expiryInfoKey, expinfo3.expiryInfoKey})
+	expiryKeeper.update(nil, []*expiryInfoKey{expinfo1.expiryInfoKey, expinfo2.expiryInfoKey, expinfo3.expiryInfoKey})
 	listExpinfo4, _ := expiryKeeper.retrieve(13)
 	assert.Nil(t, listExpinfo4)
 

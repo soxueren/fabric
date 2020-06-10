@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	msp2 "github.com/hyperledger/fabric-protos-go/msp"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/msp/mocks"
-	msp2 "github.com/hyperledger/fabric/protos/msp"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -38,9 +38,9 @@ func TestSetup(t *testing.T) {
 	err = i.Setup(nil)
 	assert.NoError(t, err)
 	mockMSP.AssertExpectations(t)
-	assert.Equal(t, 0, i.(*cachedMSP).deserializeIdentityCache.Len())
-	assert.Equal(t, 0, i.(*cachedMSP).satisfiesPrincipalCache.Len())
-	assert.Equal(t, 0, i.(*cachedMSP).validateIdentityCache.Len())
+	assert.Equal(t, 0, i.(*cachedMSP).deserializeIdentityCache.len())
+	assert.Equal(t, 0, i.(*cachedMSP).satisfiesPrincipalCache.len())
+	assert.Equal(t, 0, i.(*cachedMSP).validateIdentityCache.len())
 }
 
 func TestGetType(t *testing.T) {
@@ -133,8 +133,8 @@ func TestDeserializeIdentity(t *testing.T) {
 	// Stress the cache and ensure concurrent operations
 	// do not result in a failure
 	var wg sync.WaitGroup
-	wg.Add(10000)
-	for i := 0; i < 10000; i++ {
+	wg.Add(100)
+	for i := 0; i < 100; i++ {
 		go func(m msp.MSP, i int) {
 			sIdentity := serializedIdentity
 			expectedIdentity := mockIdentity
@@ -152,7 +152,7 @@ func TestDeserializeIdentity(t *testing.T) {
 
 	mockMSP.AssertExpectations(t)
 	// Check the cache
-	_, ok := wrappedMSP.(*cachedMSP).deserializeIdentityCache.Get(string(serializedIdentity))
+	_, ok := wrappedMSP.(*cachedMSP).deserializeIdentityCache.get(string(serializedIdentity))
 	assert.True(t, ok)
 
 	// Check the same object is returned
@@ -165,12 +165,12 @@ func TestDeserializeIdentity(t *testing.T) {
 	mockIdentity = &mocks.MockIdentity{ID: "Bob"}
 	serializedIdentity = []byte{1, 2, 3, 4}
 	mockMSP.On("DeserializeIdentity", serializedIdentity).Return(mockIdentity, errors.New("Invalid identity"))
-	id, err = wrappedMSP.DeserializeIdentity(serializedIdentity)
+	_, err = wrappedMSP.DeserializeIdentity(serializedIdentity)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Invalid identity")
 	mockMSP.AssertExpectations(t)
 
-	_, ok = wrappedMSP.(*cachedMSP).deserializeIdentityCache.Get(string(serializedIdentity))
+	_, ok = wrappedMSP.(*cachedMSP).deserializeIdentityCache.get(string(serializedIdentity))
 	assert.False(t, ok)
 }
 
@@ -190,7 +190,7 @@ func TestValidate(t *testing.T) {
 	// Check the cache
 	identifier := mockIdentity.GetIdentifier()
 	key := string(identifier.Mspid + ":" + identifier.Id)
-	v, ok := i.(*cachedMSP).validateIdentityCache.Get(string(key))
+	v, ok := i.(*cachedMSP).validateIdentityCache.get(string(key))
 	assert.True(t, ok)
 	assert.True(t, v.(bool))
 
@@ -209,7 +209,7 @@ func TestValidate(t *testing.T) {
 	// Check the cache
 	identifier = mockIdentity.GetIdentifier()
 	key = string(identifier.Mspid + ":" + identifier.Id)
-	_, ok = i.(*cachedMSP).validateIdentityCache.Get(string(key))
+	_, ok = i.(*cachedMSP).validateIdentityCache.get(string(key))
 	assert.False(t, ok)
 }
 
@@ -293,7 +293,7 @@ func TestSatisfiesPrincipal(t *testing.T) {
 	identityKey := string(identifier.Mspid + ":" + identifier.Id)
 	principalKey := string(mockMSPPrincipal.PrincipalClassification) + string(mockMSPPrincipal.Principal)
 	key := identityKey + principalKey
-	v, ok := i.(*cachedMSP).satisfiesPrincipalCache.Get(key)
+	v, ok := i.(*cachedMSP).satisfiesPrincipalCache.get(key)
 	assert.True(t, ok)
 	assert.Nil(t, v)
 
@@ -316,7 +316,7 @@ func TestSatisfiesPrincipal(t *testing.T) {
 	identityKey = string(identifier.Mspid + ":" + identifier.Id)
 	principalKey = string(mockMSPPrincipal.PrincipalClassification) + string(mockMSPPrincipal.Principal)
 	key = identityKey + principalKey
-	v, ok = i.(*cachedMSP).satisfiesPrincipalCache.Get(key)
+	v, ok = i.(*cachedMSP).satisfiesPrincipalCache.get(key)
 	assert.True(t, ok)
 	assert.NotNil(t, v)
 	assert.Contains(t, "Invalid", v.(error).Error())

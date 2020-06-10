@@ -4,48 +4,53 @@ package fake
 import (
 	"sync"
 
-	commonledger "github.com/hyperledger/fabric/common/ledger"
-	chaincode_test "github.com/hyperledger/fabric/core/chaincode"
-	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/hyperledger/fabric-protos-go/peer"
+	"github.com/hyperledger/fabric/common/ledger"
+	"github.com/hyperledger/fabric/core/chaincode"
 )
 
 type QueryResponseBuilder struct {
-	BuildQueryResponseStub        func(txContext *chaincode_test.TransactionContext, iter commonledger.ResultsIterator, iterID string) (*pb.QueryResponse, error)
+	BuildQueryResponseStub        func(*chaincode.TransactionContext, ledger.ResultsIterator, string, bool, int32) (*peer.QueryResponse, error)
 	buildQueryResponseMutex       sync.RWMutex
 	buildQueryResponseArgsForCall []struct {
-		txContext *chaincode_test.TransactionContext
-		iter      commonledger.ResultsIterator
-		iterID    string
+		arg1 *chaincode.TransactionContext
+		arg2 ledger.ResultsIterator
+		arg3 string
+		arg4 bool
+		arg5 int32
 	}
 	buildQueryResponseReturns struct {
-		result1 *pb.QueryResponse
+		result1 *peer.QueryResponse
 		result2 error
 	}
 	buildQueryResponseReturnsOnCall map[int]struct {
-		result1 *pb.QueryResponse
+		result1 *peer.QueryResponse
 		result2 error
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *QueryResponseBuilder) BuildQueryResponse(txContext *chaincode_test.TransactionContext, iter commonledger.ResultsIterator, iterID string) (*pb.QueryResponse, error) {
+func (fake *QueryResponseBuilder) BuildQueryResponse(arg1 *chaincode.TransactionContext, arg2 ledger.ResultsIterator, arg3 string, arg4 bool, arg5 int32) (*peer.QueryResponse, error) {
 	fake.buildQueryResponseMutex.Lock()
 	ret, specificReturn := fake.buildQueryResponseReturnsOnCall[len(fake.buildQueryResponseArgsForCall)]
 	fake.buildQueryResponseArgsForCall = append(fake.buildQueryResponseArgsForCall, struct {
-		txContext *chaincode_test.TransactionContext
-		iter      commonledger.ResultsIterator
-		iterID    string
-	}{txContext, iter, iterID})
-	fake.recordInvocation("BuildQueryResponse", []interface{}{txContext, iter, iterID})
+		arg1 *chaincode.TransactionContext
+		arg2 ledger.ResultsIterator
+		arg3 string
+		arg4 bool
+		arg5 int32
+	}{arg1, arg2, arg3, arg4, arg5})
+	fake.recordInvocation("BuildQueryResponse", []interface{}{arg1, arg2, arg3, arg4, arg5})
 	fake.buildQueryResponseMutex.Unlock()
 	if fake.BuildQueryResponseStub != nil {
-		return fake.BuildQueryResponseStub(txContext, iter, iterID)
+		return fake.BuildQueryResponseStub(arg1, arg2, arg3, arg4, arg5)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
 	}
-	return fake.buildQueryResponseReturns.result1, fake.buildQueryResponseReturns.result2
+	fakeReturns := fake.buildQueryResponseReturns
+	return fakeReturns.result1, fakeReturns.result2
 }
 
 func (fake *QueryResponseBuilder) BuildQueryResponseCallCount() int {
@@ -54,30 +59,41 @@ func (fake *QueryResponseBuilder) BuildQueryResponseCallCount() int {
 	return len(fake.buildQueryResponseArgsForCall)
 }
 
-func (fake *QueryResponseBuilder) BuildQueryResponseArgsForCall(i int) (*chaincode_test.TransactionContext, commonledger.ResultsIterator, string) {
-	fake.buildQueryResponseMutex.RLock()
-	defer fake.buildQueryResponseMutex.RUnlock()
-	return fake.buildQueryResponseArgsForCall[i].txContext, fake.buildQueryResponseArgsForCall[i].iter, fake.buildQueryResponseArgsForCall[i].iterID
+func (fake *QueryResponseBuilder) BuildQueryResponseCalls(stub func(*chaincode.TransactionContext, ledger.ResultsIterator, string, bool, int32) (*peer.QueryResponse, error)) {
+	fake.buildQueryResponseMutex.Lock()
+	defer fake.buildQueryResponseMutex.Unlock()
+	fake.BuildQueryResponseStub = stub
 }
 
-func (fake *QueryResponseBuilder) BuildQueryResponseReturns(result1 *pb.QueryResponse, result2 error) {
+func (fake *QueryResponseBuilder) BuildQueryResponseArgsForCall(i int) (*chaincode.TransactionContext, ledger.ResultsIterator, string, bool, int32) {
+	fake.buildQueryResponseMutex.RLock()
+	defer fake.buildQueryResponseMutex.RUnlock()
+	argsForCall := fake.buildQueryResponseArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5
+}
+
+func (fake *QueryResponseBuilder) BuildQueryResponseReturns(result1 *peer.QueryResponse, result2 error) {
+	fake.buildQueryResponseMutex.Lock()
+	defer fake.buildQueryResponseMutex.Unlock()
 	fake.BuildQueryResponseStub = nil
 	fake.buildQueryResponseReturns = struct {
-		result1 *pb.QueryResponse
+		result1 *peer.QueryResponse
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *QueryResponseBuilder) BuildQueryResponseReturnsOnCall(i int, result1 *pb.QueryResponse, result2 error) {
+func (fake *QueryResponseBuilder) BuildQueryResponseReturnsOnCall(i int, result1 *peer.QueryResponse, result2 error) {
+	fake.buildQueryResponseMutex.Lock()
+	defer fake.buildQueryResponseMutex.Unlock()
 	fake.BuildQueryResponseStub = nil
 	if fake.buildQueryResponseReturnsOnCall == nil {
 		fake.buildQueryResponseReturnsOnCall = make(map[int]struct {
-			result1 *pb.QueryResponse
+			result1 *peer.QueryResponse
 			result2 error
 		})
 	}
 	fake.buildQueryResponseReturnsOnCall[i] = struct {
-		result1 *pb.QueryResponse
+		result1 *peer.QueryResponse
 		result2 error
 	}{result1, result2}
 }

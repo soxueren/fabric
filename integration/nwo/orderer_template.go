@@ -9,27 +9,34 @@ package nwo
 const DefaultOrdererTemplate = `---
 {{ with $w := . -}}
 General:
-  LedgerType: file
   ListenAddress: 127.0.0.1
   ListenPort: {{ .OrdererPort Orderer "Listen" }}
   TLS:
-    Enabled: false
-    PrivateKey: tls/server.key
-    Certificate: tls/server.crt
+    Enabled: true
+    PrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
+    Certificate: {{ $w.OrdererLocalTLSDir Orderer }}/server.crt
     RootCAs:
-    - tls/ca.crt
-    ClientAuthRequired: false
+    -  {{ $w.OrdererLocalTLSDir Orderer }}/ca.crt
+    ClientAuthRequired: {{ $w.ClientAuthRequired }}
     ClientRootCAs:
+  Cluster:
+    ClientCertificate: {{ $w.OrdererLocalTLSDir Orderer }}/server.crt
+    ClientPrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
+    ServerCertificate: {{ $w.OrdererLocalTLSDir Orderer }}/server.crt
+    ServerPrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
+    DialTimeout: 5s
+    RPCTimeout: 7s
+    ReplicationBufferSize: 20971520
+    ReplicationPullTimeout: 5s
+    ReplicationRetryTimeout: 5s
+    ListenAddress: 127.0.0.1
+    ListenPort: {{ .OrdererPort Orderer "Cluster" }}
   Keepalive:
     ServerMinInterval: 60s
     ServerInterval: 7200s
     ServerTimeout: 20s
-  LogLevel: info
-  LogFormat: '%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}'
-  GenesisMethod: file
-  GenesisProfile: {{ .SystemChannel.Profile }}
-  GenesisFile: {{ .RootDir }}/{{ .SystemChannel.Name }}_block.pb
-  SystemChannel: {{ .SystemChannel.Name }}
+  BootstrapMethod: file
+  BootstrapFile: {{ .RootDir }}/{{ .SystemChannel.Name }}_block.pb
   LocalMSPDir: {{ $w.OrdererLocalMSPDir Orderer }}
   LocalMSPID: {{ ($w.Organization Orderer.Organization).MSPID }}
   Profile:
@@ -47,8 +54,6 @@ General:
 FileLedger:
   Location: {{ .OrdererDir Orderer }}/system
   Prefix: hyperledger-fabric-ordererledger
-RAMLedger:
-  HistorySize: 1000
 {{ if eq .Consensus.Type "kafka" -}}
 Kafka:
   Retry:
@@ -68,15 +73,43 @@ Kafka:
       RetryMax: 3
     Consumer:
       RetryBackoff: 2s
+  Topic:
+    ReplicationFactor: 1
   Verbose: false
   TLS:
     Enabled: false
     PrivateKey:
     Certificate:
     RootCAs:
+  SASLPlain:
+    Enabled: false
+    User:
+    Password:
   Version:{{ end }}
 Debug:
-    BroadcastTraceDir:
-    DeliverTraceDir:
+  BroadcastTraceDir:
+  DeliverTraceDir:
+Consensus:
+  WALDir: {{ .OrdererDir Orderer }}/etcdraft/wal
+  SnapDir: {{ .OrdererDir Orderer }}/etcdraft/snapshot
+  EvictionSuspicion: 10s
+Operations:
+  ListenAddress: 127.0.0.1:{{ .OrdererPort Orderer "Operations" }}
+  TLS:
+    Enabled: true
+    PrivateKey: {{ $w.OrdererLocalTLSDir Orderer }}/server.key
+    Certificate: {{ $w.OrdererLocalTLSDir Orderer }}/server.crt
+    RootCAs:
+    -  {{ $w.OrdererLocalTLSDir Orderer }}/ca.crt
+    ClientAuthRequired: {{ $w.ClientAuthRequired }}
+    ClientRootCAs:
+    -  {{ $w.OrdererLocalTLSDir Orderer }}/ca.crt
+Metrics:
+  Provider: {{ .MetricsProvider }}
+  Statsd:
+    Network: udp
+    Address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}127.0.0.1:8125{{ end }}
+    WriteInterval: 5s
+    Prefix: {{ ReplaceAll (ToLower Orderer.ID) "." "_" }}
 {{- end }}
 `
