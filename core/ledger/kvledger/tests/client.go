@@ -16,7 +16,7 @@ import (
 	"github.com/hyperledger/fabric/core/common/privdata"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/protoutil"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // client helps in a transction simulation. The client keeps accumlating the results of each simulated transaction
@@ -26,12 +26,12 @@ type client struct {
 	lgr            ledger.PeerLedger
 	lgrID          string
 	simulatedTrans []*txAndPvtdata // accumulates the results of transactions simulations
-	missingPvtData ledger.TxMissingPvtDataMap
-	assert         *assert.Assertions
+	missingPvtData ledger.TxMissingPvtData
+	assert         *require.Assertions
 }
 
 func newClient(lgr ledger.PeerLedger, lgrID string, t *testing.T) *client {
-	return &client{lgr, lgrID, nil, make(ledger.TxMissingPvtDataMap), assert.New(t)}
+	return &client{lgr, lgrID, nil, make(ledger.TxMissingPvtData), require.New(t)}
 }
 
 // simulateDataTx takes a simulation logic and wraps it between
@@ -49,6 +49,10 @@ func (c *client) simulateDataTx(txid string, simulationLogic func(s *simulator))
 	txAndPvtdata := sim.done()
 	c.simulatedTrans = append(c.simulatedTrans, txAndPvtdata)
 	return txAndPvtdata
+}
+
+func (c *client) submitHandCraftedTx(txAndPvtdata *txAndPvtdata) {
+	c.simulatedTrans = append(c.simulatedTrans, txAndPvtdata)
 }
 
 func (c *client) addPostOrderTx(txid string, customTxType common.HeaderType) *txAndPvtdata {
@@ -105,6 +109,10 @@ func (c *client) causeMissingPvtData(txIndex uint64) {
 	c.simulatedTrans[txIndex].Pvtws = nil
 }
 
+func (c *client) discardSimulation() {
+	c.simulatedTrans = nil
+}
+
 func (c *client) retrieveCommittedBlocksAndPvtdata(startNum, endNum uint64) []*ledger.BlockAndPvtData {
 	data := []*ledger.BlockAndPvtData{}
 	for i := startNum; i <= endNum; i++ {
@@ -137,7 +145,7 @@ func (c *client) currentCommitHash() []byte {
 type simulator struct {
 	ledger.TxSimulator
 	txid   string
-	assert *assert.Assertions
+	assert *require.Assertions
 }
 
 func (s *simulator) getState(ns, key string) string {

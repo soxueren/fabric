@@ -54,7 +54,7 @@ every organization on a channel needs to complete each step.
 3. **Approve a chaincode definition for your organization:** Every organization
   that will use the chaincode needs to complete this step. The chaincode
   definition needs to be approved by a sufficient number of organizations
-  to satisfy the channel's LifecycleEndorsment policy (a majority, by default)
+  to satisfy the channel's LifecycleEndorsement policy (a majority, by default)
   before the chaincode can be started on the channel.
 4. **Commit the chaincode definition to the channel:** The commit transaction
   needs to be submitted by one organization once the required number of
@@ -87,7 +87,7 @@ automatically create a file in this format.
   chaincode language, code path, and package label. You can see an example of
   a metadata file below:
   ```
-  {"Path":"fabric-samples/chaincode/fabcar/go","Type":"golang","Label":"fabcarv1"}
+  {"Path":"fabric-samples/asset-transfer-basic/chaincode-go","Type":"golang","Label":"basicv1"}
   ```
 
 ![Packaging the chaincode](lifecycle/Lifecycle-package.png)
@@ -148,7 +148,7 @@ consistent across organizations:
   endorse a transaction.
 - **Collection Configuration:** The path to a private data collection definition
   file associated with your chaincode. For more information about private data
-  collections, see the [Private Data architecture reference](https://hyperledger-fabric.readthedocs.io/en/{BRANCH}/private-data-arch.html).
+  collections, see the [Private Data architecture reference](https://hyperledger-fabric.readthedocs.io/en/{RTD_TAG}/private-data-arch.html).
 - **ESCC/VSCC Plugins:** The name of a custom endorsement or validation
   plugin to be used by this chaincode.
 - **Initialization:** If you use the low level APIs provided by the Fabric Chaincode

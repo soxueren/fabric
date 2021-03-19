@@ -18,18 +18,16 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr"
 	"github.com/hyperledger/fabric/core/ledger/mock"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-var (
-	testHashFunc = func(data []byte) ([]byte, error) {
-		h := sha256.New()
-		if _, err := h.Write(data); err != nil {
-			return nil, err
-		}
-		return h.Sum(nil), nil
+var testHashFunc = func(data []byte) ([]byte, error) {
+	h := sha256.New()
+	if _, err := h.Write(data); err != nil {
+		return nil, err
 	}
-)
+	return h.Sum(nil), nil
+}
 
 type levelDBLockBasedHistoryEnv struct {
 	t                     testing.TB
@@ -69,11 +67,10 @@ func newTestHistoryEnv(t *testing.T) *levelDBLockBasedHistoryEnv {
 	}
 	txMgr, err := txmgr.NewLockBasedTxMgr(txmgrInitializer)
 
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	testHistoryDBProvider, err := NewDBProvider(testHistoryDBPath)
-	assert.NoError(t, err)
-	testHistoryDB, err := testHistoryDBProvider.GetDBHandle("TestHistoryDB")
-	assert.NoError(t, err)
+	require.NoError(t, err)
+	testHistoryDB := testHistoryDBProvider.GetDBHandle("TestHistoryDB")
 
 	return &levelDBLockBasedHistoryEnv{
 		t,
@@ -106,7 +103,6 @@ type testBlockStoreEnv struct {
 }
 
 func newBlockStorageTestEnv(t testing.TB) *testBlockStoreEnv {
-
 	testPath, err := ioutil.TempDir("", "historyleveldb-")
 	if err != nil {
 		panic(err)
@@ -122,7 +118,7 @@ func newBlockStorageTestEnv(t testing.TB) *testBlockStoreEnv {
 	indexConfig := &blkstorage.IndexConfig{AttrsToIndex: attrsToIndex}
 
 	p, err := blkstorage.NewProvider(conf, indexConfig, &disabled.Provider{})
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	return &testBlockStoreEnv{t, p, testPath}
 }
 

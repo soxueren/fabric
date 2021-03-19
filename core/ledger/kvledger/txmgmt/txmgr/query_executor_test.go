@@ -19,18 +19,16 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	btltestutil "github.com/hyperledger/fabric/core/ledger/pvtdatapolicy/testutil"
 	"github.com/hyperledger/fabric/core/ledger/util"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-var (
-	testHashFunc = func(data []byte) ([]byte, error) {
-		h := sha256.New()
-		if _, err := h.Write(data); err != nil {
-			return nil, err
-		}
-		return h.Sum(nil), nil
+var testHashFunc = func(data []byte) ([]byte, error) {
+	h := sha256.New()
+	if _, err := h.Write(data); err != nil {
+		return nil, err
 	}
-)
+	return h.Sum(nil), nil
+}
 
 func TestPvtdataResultsItr(t *testing.T) {
 	testEnv := testEnvsMap[levelDBtestEnvName]
@@ -46,7 +44,8 @@ func TestPvtdataResultsItr(t *testing.T) {
 
 	txMgr := testEnv.getTxMgr()
 	populateCollConfigForTest(t, txMgr, []collConfigkey{
-		{"ns1", "coll1"}, {"ns2", "coll1"}, {"ns3", "coll1"}, {"ns4", "coll1"}},
+		{"ns1", "coll1"}, {"ns2", "coll1"}, {"ns3", "coll1"}, {"ns4", "coll1"},
+	},
 		version.NewHeight(1, 0),
 	)
 
@@ -58,15 +57,15 @@ func TestPvtdataResultsItr(t *testing.T) {
 	putPvtUpdates(t, updates, "ns2", "coll1", "key5", []byte("pvt_value5"), version.NewHeight(1, 5))
 	putPvtUpdates(t, updates, "ns2", "coll1", "key6", []byte("pvt_value6"), version.NewHeight(1, 6))
 	putPvtUpdates(t, updates, "ns3", "coll1", "key7", []byte("pvt_value7"), version.NewHeight(1, 7))
-	txMgr.db.ApplyPrivacyAwareUpdates(updates, version.NewHeight(2, 7))
+	require.NoError(t, txMgr.db.ApplyPrivacyAwareUpdates(updates, version.NewHeight(2, 7)))
 	qe := newQueryExecutor(txMgr, "", nil, true, testHashFunc)
 
 	resItr, err := qe.GetPrivateDataRangeScanIterator("ns1", "coll1", "key1", "key3")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	testItr(t, resItr, "ns1", "coll1", []string{"key1", "key2"})
 
 	resItr, err = qe.GetPrivateDataRangeScanIterator("ns4", "coll1", "key1", "key3")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	testItr(t, resItr, "ns4", "coll1", []string{})
 }
 
@@ -78,12 +77,12 @@ func testItr(t *testing.T, itr commonledger.ResultsIterator, expectedNs string, 
 		pvtdataKV := queryResult.(*queryresult.KV)
 		ns := pvtdataKV.Namespace
 		key := pvtdataKV.Key
-		assert.Equal(t, expectedNs, ns)
-		assert.Equal(t, expectedKey, key)
+		require.Equal(t, expectedNs, ns)
+		require.Equal(t, expectedKey, key)
 	}
 	last, err := itr.Next()
-	assert.NoError(t, err)
-	assert.Nil(t, last)
+	require.NoError(t, err)
+	require.Nil(t, last)
 }
 
 func TestPrivateDataMetadataRetrievalByHash(t *testing.T) {
@@ -108,25 +107,25 @@ func testPrivateDataMetadataRetrievalByHash(t *testing.T, env testEnv) {
 	// Simulate and commit tx1 - set val and metadata for key1
 	key1, value1, metadata1 := "key1", []byte("value1"), map[string][]byte{"entry1": []byte("meatadata1-entry1")}
 	s1, _ := txMgr.NewTxSimulator("test_tx1")
-	s1.SetPrivateData("ns", "coll", key1, value1)
-	s1.SetPrivateDataMetadata("ns", "coll", key1, metadata1)
+	require.NoError(t, s1.SetPrivateData("ns", "coll", key1, value1))
+	require.NoError(t, s1.SetPrivateDataMetadata("ns", "coll", key1, metadata1))
 	s1.Done()
 	blkAndPvtdata1 := prepareNextBlockForTestFromSimulator(t, bg, s1)
 	_, _, err := txMgr.ValidateAndPrepare(blkAndPvtdata1, true)
-	assert.NoError(t, err)
-	assert.NoError(t, txMgr.Commit())
+	require.NoError(t, err)
+	require.NoError(t, txMgr.Commit())
 
 	t.Run("query-helper-for-queryexecutor", func(t *testing.T) {
 		qe := newQueryExecutor(txMgr, "", nil, true, testHashFunc)
 		metadataRetrieved, err := qe.GetPrivateDataMetadataByHash("ns", "coll", util.ComputeStringHash("key1"))
-		assert.NoError(t, err)
-		assert.Equal(t, metadata1, metadataRetrieved)
+		require.NoError(t, err)
+		require.Equal(t, metadata1, metadataRetrieved)
 	})
 
 	t.Run("query-helper-for-txsimulator", func(t *testing.T) {
 		qe := newQueryExecutor(txMgr, "txid-1", rwsetutil.NewRWSetBuilder(), true, testHashFunc)
 		_, err = qe.GetPrivateDataMetadataByHash("ns", "coll", util.ComputeStringHash("key1"))
-		assert.EqualError(t, err, "retrieving private data metadata by keyhash is not supported in simulation. This function is only available for query as yet")
+		require.EqualError(t, err, "retrieving private data metadata by keyhash is not supported in simulation. This function is only available for query as yet")
 	})
 }
 
@@ -155,22 +154,22 @@ func testGetPvtdataHash(t *testing.T, env testEnv) {
 		util.ComputeStringHash("existing-value"),
 		version.NewHeight(1, 1),
 	)
-	assert.NoError(t, txMgr.db.ApplyPrivacyAwareUpdates(batch, version.NewHeight(1, 5)))
+	require.NoError(t, txMgr.db.ApplyPrivacyAwareUpdates(batch, version.NewHeight(1, 5)))
 
 	s, _ := txMgr.NewTxSimulator("test_tx1")
 	simulator := s.(*txSimulator)
 	hash, err := simulator.GetPrivateDataHash("ns", "coll", "non-existing-key")
-	assert.NoError(t, err)
-	assert.Nil(t, hash)
+	require.NoError(t, err)
+	require.Nil(t, hash)
 
 	hash, err = simulator.GetPrivateDataHash("ns", "coll", "existing-key")
-	assert.NoError(t, err)
-	assert.Equal(t, util.ComputeStringHash("existing-value"), hash)
+	require.NoError(t, err)
+	require.Equal(t, util.ComputeStringHash("existing-value"), hash)
 	simulator.Done()
 
 	simRes, err := simulator.GetTxSimulationResults()
-	assert.NoError(t, err)
-	assert.False(t, simRes.ContainsPvtWrites())
+	require.NoError(t, err)
+	require.False(t, simRes.ContainsPvtWrites())
 	txrwset, _ := rwsetutil.TxRwSetFromProtoMsg(simRes.PubSimulationResults)
 
 	expectedRwSet := &rwsetutil.TxRwSet{
@@ -198,7 +197,7 @@ func testGetPvtdataHash(t *testing.T, env testEnv) {
 			},
 		},
 	}
-	assert.Equal(t, expectedRwSet, txrwset)
+	require.Equal(t, expectedRwSet, txrwset)
 }
 
 func putPvtUpdates(t *testing.T, updates *privacyenabledstate.UpdateBatch, ns, coll, key string, value []byte, ver *version.Height) {

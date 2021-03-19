@@ -13,25 +13,21 @@ import (
 	"io/ioutil"
 	"math"
 	"os"
-	"path"
+	"path/filepath"
 	"testing"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/snapshot"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/mock"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-var (
-	testNewHashFunc = func() (hash.Hash, error) {
-		return sha256.New(), nil
-	}
-)
+var testNewHashFunc = func() (hash.Hash, error) {
+	return sha256.New(), nil
+}
 
 func TestMain(m *testing.M) {
 	flogging.ActivateSpec("confighistory=debug")
@@ -46,21 +42,18 @@ func TestWithNoCollectionConfig(t *testing.T) {
 	defer os.RemoveAll(dbPath)
 	mockCCInfoProvider := &mock.DeployedChaincodeInfoProvider{}
 	mgr, err := NewMgr(dbPath, mockCCInfoProvider)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	testutilEquipMockCCInfoProviderToReturnDesiredCollConfig(mockCCInfoProvider, "chaincode1", nil)
 	err = mgr.HandleStateUpdates(&ledger.StateUpdateTrigger{
 		LedgerID:           "ledger1",
-		CommittingBlockNum: 50},
+		CommittingBlockNum: 50,
+	},
 	)
-	assert.NoError(t, err)
-	dummyLedgerInfoRetriever := &dummyLedgerInfoRetriever{
-		info: &common.BlockchainInfo{Height: 100},
-		qe:   &mock.QueryExecutor{},
-	}
-	retriever := mgr.GetRetriever("ledger1", dummyLedgerInfoRetriever)
+	require.NoError(t, err)
+	retriever := mgr.GetRetriever("ledger1")
 	collConfig, err := retriever.MostRecentCollectionConfigBelow(90, "chaincode1")
-	assert.NoError(t, err)
-	assert.Nil(t, collConfig)
+	require.NoError(t, err)
+	require.Nil(t, collConfig)
 }
 
 func TestWithEmptyCollectionConfig(t *testing.T) {
@@ -71,7 +64,7 @@ func TestWithEmptyCollectionConfig(t *testing.T) {
 	defer os.RemoveAll(dbPath)
 	mockCCInfoProvider := &mock.DeployedChaincodeInfoProvider{}
 	mgr, err := NewMgr(dbPath, mockCCInfoProvider)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	testutilEquipMockCCInfoProviderToReturnDesiredCollConfig(
 		mockCCInfoProvider,
 		"chaincode1",
@@ -79,20 +72,17 @@ func TestWithEmptyCollectionConfig(t *testing.T) {
 	)
 	err = mgr.HandleStateUpdates(&ledger.StateUpdateTrigger{
 		LedgerID:           "ledger1",
-		CommittingBlockNum: 50},
+		CommittingBlockNum: 50,
+	},
 	)
-	assert.NoError(t, err)
-	dummyLedgerInfoRetriever := &dummyLedgerInfoRetriever{
-		info: &common.BlockchainInfo{Height: 100},
-		qe:   &mock.QueryExecutor{},
-	}
-	retriever := mgr.GetRetriever("ledger1", dummyLedgerInfoRetriever)
+	require.NoError(t, err)
+	retriever := mgr.GetRetriever("ledger1")
 	collConfig, err := retriever.MostRecentCollectionConfigBelow(90, "chaincode1")
-	assert.NoError(t, err)
-	assert.Nil(t, collConfig)
+	require.NoError(t, err)
+	require.Nil(t, collConfig)
 }
 
-func TestMgr(t *testing.T) {
+func TestMgrQueries(t *testing.T) {
 	dbPath, err := ioutil.TempDir("", "confighistory")
 	if err != nil {
 		t.Fatalf("Failed to create config history directory: %s", err)
@@ -100,13 +90,8 @@ func TestMgr(t *testing.T) {
 	defer os.RemoveAll(dbPath)
 	mockCCInfoProvider := &mock.DeployedChaincodeInfoProvider{}
 	mgr, err := NewMgr(dbPath, mockCCInfoProvider)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	chaincodeName := "chaincode1"
-	maxBlockNumberInLedger := uint64(2000)
-	dummyLedgerInfoRetriever := &dummyLedgerInfoRetriever{
-		info: &common.BlockchainInfo{Height: maxBlockNumberInLedger + 1},
-		qe:   &mock.QueryExecutor{},
-	}
 	configCommittingBlockNums := []uint64{5, 10, 15, 100}
 	ledgerIds := []string{"ledgerid1", "ledger2"}
 
@@ -116,10 +101,12 @@ func TestMgr(t *testing.T) {
 			// for each ledgerid and commitHeight combination, construct a unique collConfigPackage and induce a stateUpdate
 			collConfigPackage := sampleCollectionConfigPackage(ledgerid, committingBlockNum)
 			testutilEquipMockCCInfoProviderToReturnDesiredCollConfig(mockCCInfoProvider, chaincodeName, collConfigPackage)
-			mgr.HandleStateUpdates(&ledger.StateUpdateTrigger{
+			err = mgr.HandleStateUpdates(&ledger.StateUpdateTrigger{
 				LedgerID:           ledgerid,
-				CommittingBlockNum: committingBlockNum},
+				CommittingBlockNum: committingBlockNum,
+			},
 			)
+			require.NoError(t, err)
 		}
 	}
 
@@ -129,45 +116,70 @@ func TestMgr(t *testing.T) {
 		// should be configuration committed at 'V'
 		m := map[uint64]uint64{math.MaxUint64: 100, 1000: 100, 50: 15, 12: 10, 7: 5}
 		for _, ledgerid := range ledgerIds {
-			retriever := mgr.GetRetriever(ledgerid, dummyLedgerInfoRetriever)
+			retriever := mgr.GetRetriever(ledgerid)
 			for testHeight, expectedHeight := range m {
 				retrievedConfig, err := retriever.MostRecentCollectionConfigBelow(testHeight, chaincodeName)
-				assert.NoError(t, err)
+				require.NoError(t, err)
 				expectedConfig := sampleCollectionConfigPackage(ledgerid, expectedHeight)
-				assert.Equal(t, expectedConfig, retrievedConfig.CollectionConfig)
-				assert.Equal(t, expectedHeight, retrievedConfig.CommittingBlockNum)
+				require.Equal(t, expectedConfig, retrievedConfig.CollectionConfig)
+				require.Equal(t, expectedHeight, retrievedConfig.CommittingBlockNum)
 			}
 
 			retrievedConfig, err := retriever.MostRecentCollectionConfigBelow(5, chaincodeName)
-			assert.NoError(t, err)
-			assert.Nil(t, retrievedConfig)
+			require.NoError(t, err)
+			require.Nil(t, retrievedConfig)
 		}
 	})
+}
 
-	t.Run("test-api-CollectionConfigAt()", func(t *testing.T) {
-		for _, ledgerid := range ledgerIds {
-			retriever := mgr.GetRetriever(ledgerid, dummyLedgerInfoRetriever)
-			for _, commitHeight := range configCommittingBlockNums {
-				retrievedConfig, err := retriever.CollectionConfigAt(commitHeight, chaincodeName)
-				assert.NoError(t, err)
-				expectedConfig := sampleCollectionConfigPackage(ledgerid, commitHeight)
-				assert.Equal(t, expectedConfig, retrievedConfig.CollectionConfig)
-				assert.Equal(t, commitHeight, retrievedConfig.CommittingBlockNum)
-			}
+func TestDrop(t *testing.T) {
+	dbPath, err := ioutil.TempDir("", "confighistory")
+	require.NoError(t, err)
+	defer os.RemoveAll(dbPath)
+	mockCCInfoProvider := &mock.DeployedChaincodeInfoProvider{}
+	mgr, err := NewMgr(dbPath, mockCCInfoProvider)
+	require.NoError(t, err)
+	chaincodeName := "chaincode1"
+	configCommittingBlockNums := []uint64{5, 10, 15, 100}
+	ledgerIds := []string{"ledger1", "ledger2"}
+
+	// Populate collection config versions
+	for _, ledgerid := range ledgerIds {
+		for _, committingBlockNum := range configCommittingBlockNums {
+			// for each ledgerid and commitHeight combination, construct a unique collConfigPackage and induce a stateUpdate
+			collConfigPackage := sampleCollectionConfigPackage(ledgerid, committingBlockNum)
+			testutilEquipMockCCInfoProviderToReturnDesiredCollConfig(mockCCInfoProvider, chaincodeName, collConfigPackage)
+			require.NoError(t, mgr.HandleStateUpdates(&ledger.StateUpdateTrigger{LedgerID: ledgerid, CommittingBlockNum: committingBlockNum}))
 		}
-	})
+	}
 
-	t.Run("test-api-CollectionConfigAt-BoundaryCases()", func(t *testing.T) {
-		retriever := mgr.GetRetriever("ledgerid1", dummyLedgerInfoRetriever)
-		retrievedConfig, err := retriever.CollectionConfigAt(4, chaincodeName)
-		assert.NoError(t, err)
-		assert.Nil(t, retrievedConfig)
+	// remove ledger1 and verify ledger1 entries are deleted and ledger2 returns collection config as is
+	require.NoError(t, mgr.Drop("ledger1"))
 
-		_, err = retriever.CollectionConfigAt(5000, chaincodeName)
-		typedErr, ok := err.(*ledger.ErrCollectionConfigNotYetAvailable)
-		assert.True(t, ok)
-		assert.Equal(t, maxBlockNumberInLedger, typedErr.MaxBlockNumCommitted)
-	})
+	retriever1 := mgr.GetRetriever("ledger1")
+	retrievedConfig, err := retriever1.MostRecentCollectionConfigBelow(math.MaxUint64, chaincodeName)
+	require.NoError(t, err)
+	require.Nil(t, retrievedConfig)
+	empty, err := retriever1.dbHandle.IsEmpty()
+	require.NoError(t, err)
+	require.True(t, empty)
+
+	retriever2 := mgr.GetRetriever("ledger2")
+	m := map[uint64]uint64{math.MaxUint64: 100, 1000: 100, 50: 15, 12: 10, 7: 5}
+	for testHeight, expectedHeight := range m {
+		retrievedConfig, err = retriever2.MostRecentCollectionConfigBelow(testHeight, chaincodeName)
+		require.NoError(t, err)
+		expectedConfig := sampleCollectionConfigPackage("ledger2", expectedHeight)
+		require.Equal(t, expectedConfig, retrievedConfig.CollectionConfig)
+		require.Equal(t, expectedHeight, retrievedConfig.CommittingBlockNum)
+	}
+
+	// drop again is not an error
+	require.NoError(t, mgr.Drop("ledger1"))
+
+	// test error path
+	mgr.Close()
+	require.EqualError(t, mgr.Drop("ledger2"), "internal leveldb error while obtaining db iterator: leveldb: closed")
 }
 
 func TestWithImplicitColls(t *testing.T) {
@@ -192,84 +204,53 @@ func TestWithImplicitColls(t *testing.T) {
 	p, err := newDBProvider(dbPath)
 	require.NoError(t, err)
 
-	mgr := &mgr{
+	mgr := &Mgr{
 		ccInfoProvider: mockCCInfoProvider,
 		dbProvider:     p,
 	}
-
+	dbHandle := mgr.dbProvider.getDB("ledger1")
+	batch := dbHandle.newBatch()
 	// add explicit collections at height 20
-	batch, err := prepareDBBatch(
+	err = prepareDBBatch(
+		batch,
 		map[string]*peer.CollectionConfigPackage{
 			"chaincode1": collConfigPackage,
 		},
 		20,
 	)
-	assert.NoError(t, err)
-	dbHandle := mgr.dbProvider.getDB("ledger1")
-	assert.NoError(t, dbHandle.writeBatch(batch, true))
-
-	onlyImplicitCollections := testutilCreateCollConfigPkg(
-		[]string{"Implicit-coll-1", "Implicit-coll-2"},
-	)
+	require.NoError(t, err)
+	require.NoError(t, dbHandle.writeBatch(batch, true))
 
 	explicitAndImplicitCollections := testutilCreateCollConfigPkg(
-		[]string{"Explicit-coll-1", "Explicit-coll-2", "Implicit-coll-1", "Implicit-coll-2"},
+		[]string{"Explicit-coll-1", "Explicit-coll-2"},
 	)
 
-	dummyLedgerInfoRetriever := &dummyLedgerInfoRetriever{
-		info: &common.BlockchainInfo{Height: 1000},
-		qe:   &mock.QueryExecutor{},
-	}
-
 	t.Run("CheckQueryExecutorCalls", func(t *testing.T) {
-		retriever := mgr.GetRetriever("ledger1", dummyLedgerInfoRetriever)
+		retriever := mgr.GetRetriever("ledger1")
 		// function MostRecentCollectionConfigBelow calls Done on query executor
 		_, err := retriever.MostRecentCollectionConfigBelow(50, "chaincode1")
-		assert.NoError(t, err)
-		assert.Equal(t, 1, dummyLedgerInfoRetriever.qe.DoneCallCount())
-		// function CollectionConfigAt calls Done on query executor
-		_, err = retriever.CollectionConfigAt(50, "chaincode1")
-		assert.NoError(t, err)
-		assert.Equal(t, 2, dummyLedgerInfoRetriever.qe.DoneCallCount())
+		require.NoError(t, err)
 	})
 
 	t.Run("MostRecentCollectionConfigBelow50", func(t *testing.T) {
 		// explicit collections added at height 20 should be merged with the implicit collections
-		retriever := mgr.GetRetriever("ledger1", dummyLedgerInfoRetriever)
+		retriever := mgr.GetRetriever("ledger1")
 		retrievedConfig, err := retriever.MostRecentCollectionConfigBelow(50, "chaincode1")
-		assert.NoError(t, err)
-		assert.True(t, proto.Equal(retrievedConfig.CollectionConfig, explicitAndImplicitCollections))
+		require.NoError(t, err)
+		require.True(t, proto.Equal(retrievedConfig.CollectionConfig, explicitAndImplicitCollections))
 	})
 
 	t.Run("MostRecentCollectionConfigBelow10", func(t *testing.T) {
 		// No explicit collections below height 10, should return only implicit collections
-		retriever := mgr.GetRetriever("ledger1", dummyLedgerInfoRetriever)
+		retriever := mgr.GetRetriever("ledger1")
 		retrievedConfig, err := retriever.MostRecentCollectionConfigBelow(10, "chaincode1")
-		assert.NoError(t, err)
-		assert.True(t, proto.Equal(retrievedConfig.CollectionConfig, onlyImplicitCollections))
+		require.NoError(t, err)
+		require.Nil(t, retrievedConfig)
 	})
-
-	t.Run("CollectionConfigAt50", func(t *testing.T) {
-		// No explicit collections at height 50, should return only implicit collections
-		retriever := mgr.GetRetriever("ledger1", dummyLedgerInfoRetriever)
-		retrievedConfig, err := retriever.CollectionConfigAt(50, "chaincode1")
-		assert.NoError(t, err)
-		assert.True(t, proto.Equal(retrievedConfig.CollectionConfig, onlyImplicitCollections))
-	})
-
-	t.Run("CollectionConfigAt20", func(t *testing.T) {
-		// Explicit collections at height 20, should be merged with implicit collections
-		retriever := mgr.GetRetriever("ledger1", dummyLedgerInfoRetriever)
-		retrievedConfig, err := retriever.CollectionConfigAt(20, "chaincode1")
-		assert.NoError(t, err)
-		assert.True(t, proto.Equal(retrievedConfig.CollectionConfig, explicitAndImplicitCollections))
-	})
-
 }
 
 type testEnvForSnapshot struct {
-	mgr             *mgr
-	retriever       *Retriever
+	mgr             *Mgr
 	testSnapshotDir string
 	cleanup         func()
 }
@@ -277,13 +258,11 @@ type testEnvForSnapshot struct {
 func newTestEnvForSnapshot(t *testing.T) *testEnvForSnapshot {
 	dbPath, err := ioutil.TempDir("", "confighistory")
 	require.NoError(t, err)
-	p, err := newDBProvider(dbPath)
+	mgr, err := NewMgr(dbPath, &mock.DeployedChaincodeInfoProvider{})
 	if err != nil {
 		os.RemoveAll(dbPath)
-		t.Fatalf("Failed to create new leveldb provider: %s", err)
+		t.Fatalf("Failed to create new config history manager: %s", err)
 	}
-	mgr := &mgr{dbProvider: p}
-	retriever := mgr.GetRetriever("ledger1", nil)
 
 	testSnapshotDir, err := ioutil.TempDir("", "confighistorysnapshot")
 	if err != nil {
@@ -292,7 +271,6 @@ func newTestEnvForSnapshot(t *testing.T) *testEnvForSnapshot {
 	}
 	return &testEnvForSnapshot{
 		mgr:             mgr,
-		retriever:       retriever,
 		testSnapshotDir: testSnapshotDir,
 		cleanup: func() {
 			os.RemoveAll(dbPath)
@@ -301,86 +279,214 @@ func newTestEnvForSnapshot(t *testing.T) *testEnvForSnapshot {
 	}
 }
 
-func TestExportConfigHistory(t *testing.T) {
-	env := newTestEnvForSnapshot(t)
-	defer env.cleanup()
+func TestExportAndImportConfigHistory(t *testing.T) {
+	setupWithSampleData := func(env *testEnvForSnapshot, ledgerID string) ([]*compositeKV, map[string][]*ledger.CollectionConfigInfo) {
+		cc1CollConfigPackage := testutilCreateCollConfigPkg([]string{"Explicit-cc1-coll-1", "Explicit-cc1-coll-2"})
+		cc2CollConfigPackage := testutilCreateCollConfigPkg([]string{"Explicit-cc2-coll-1", "Explicit-cc2-coll-2"})
+		cc3CollConfigPackage := testutilCreateCollConfigPkg([]string{"Explicit-cc3-coll-1", "Explicit-cc3-coll-2"})
+		cc1CollConfigPackageNew := testutilCreateCollConfigPkg([]string{"Explicit-cc1-coll-1", "Explicit-cc1-coll-2", "Explicit-cc1-coll-3"})
+		cc2CollConfigPackageNew := testutilCreateCollConfigPkg([]string{"Explicit-cc2-coll-1", "Explicit-cc2-coll-2", "Explicit-cc2-coll-3"})
+		cc3CollConfigPackageNew := testutilCreateCollConfigPkg([]string{"Explicit-cc3-coll-1", "Explicit-cc3-coll-2", "Explicit-cc3-coll-3"})
 
-	// config history database is empty
-	fileHashes, err := env.retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
-	require.NoError(t, err)
-	require.Empty(t, fileHashes)
-	files, err := ioutil.ReadDir(env.testSnapshotDir)
-	require.NoError(t, err)
-	require.Len(t, files, 0)
+		ccConfigInfo := map[string][]*ledger.CollectionConfigInfo{
+			"chaincode1": {
+				{
+					CollectionConfig:   cc1CollConfigPackage,
+					CommittingBlockNum: 50,
+				},
+				{
+					CollectionConfig:   cc1CollConfigPackageNew,
+					CommittingBlockNum: 100,
+				},
+			},
+			"chaincode2": {
+				{
+					CollectionConfig:   cc2CollConfigPackage,
+					CommittingBlockNum: 50,
+				},
+				{
+					CollectionConfig:   cc2CollConfigPackageNew,
+					CommittingBlockNum: 100,
+				},
+			},
+			"chaincode3": {
+				{
+					CollectionConfig:   cc3CollConfigPackage,
+					CommittingBlockNum: 50,
+				},
+				{
+					CollectionConfig:   cc3CollConfigPackageNew,
+					CommittingBlockNum: 100,
+				},
+			},
+		}
 
-	// config history database has 3 chaincodes each with 1 collection config entry in the
-	// collectionConfigNamespace
-	dbHandle := env.mgr.dbProvider.getDB("ledger1")
-	cc1collConfigPackage := testutilCreateCollConfigPkg([]string{"Explicit-cc1-coll-1", "Explicit-cc1-coll-2"})
-	cc2collConfigPackage := testutilCreateCollConfigPkg([]string{"Explicit-cc2-coll-1", "Explicit-cc2-coll-2"})
-	cc3collConfigPackage := testutilCreateCollConfigPkg([]string{"Explicit-cc3-coll-1", "Explicit-cc3-coll-2"})
-	batch, err := prepareDBBatch(
-		map[string]*peer.CollectionConfigPackage{
-			"chaincode1": cc1collConfigPackage,
-			"chaincode2": cc2collConfigPackage,
-			"chaincode3": cc3collConfigPackage,
-		},
-		50,
-	)
-	assert.NoError(t, err)
-	assert.NoError(t, dbHandle.writeBatch(batch, true))
+		db := env.mgr.dbProvider.getDB(ledgerID)
+		batch := db.newBatch()
+		err := prepareDBBatch(
+			batch,
+			map[string]*peer.CollectionConfigPackage{
+				"chaincode1": cc1CollConfigPackage,
+				"chaincode2": cc2CollConfigPackage,
+				"chaincode3": cc3CollConfigPackage,
+			},
+			50,
+		)
+		require.NoError(t, err)
+		require.NoError(t, db.writeBatch(batch, true))
 
-	fileHashes, err = env.retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
-	require.NoError(t, err)
-	cc1configBytes, err := proto.Marshal(cc1collConfigPackage)
-	require.NoError(t, err)
-	cc2configBytes, err := proto.Marshal(cc2collConfigPackage)
-	require.NoError(t, err)
-	cc3configBytes, err := proto.Marshal(cc3collConfigPackage)
-	require.NoError(t, err)
-	expectedCollectionConfigs := []*compositeKV{
-		{&compositeKey{ns: "lscc", key: "chaincode1~collection", blockNum: 50}, cc1configBytes},
-		{&compositeKey{ns: "lscc", key: "chaincode2~collection", blockNum: 50}, cc2configBytes},
-		{&compositeKey{ns: "lscc", key: "chaincode3~collection", blockNum: 50}, cc3configBytes},
+		batch = db.newBatch()
+		err = prepareDBBatch(
+			batch,
+			map[string]*peer.CollectionConfigPackage{
+				"chaincode1": cc1CollConfigPackageNew,
+				"chaincode2": cc2CollConfigPackageNew,
+				"chaincode3": cc3CollConfigPackageNew,
+			},
+			100,
+		)
+		require.NoError(t, err)
+		require.NoError(t, db.writeBatch(batch, true))
+
+		cc1configBytes, err := proto.Marshal(cc1CollConfigPackage)
+		require.NoError(t, err)
+		cc2configBytes, err := proto.Marshal(cc2CollConfigPackage)
+		require.NoError(t, err)
+		cc3configBytes, err := proto.Marshal(cc3CollConfigPackage)
+		require.NoError(t, err)
+		cc1configBytesNew, err := proto.Marshal(cc1CollConfigPackageNew)
+		require.NoError(t, err)
+		cc2configBytesNew, err := proto.Marshal(cc2CollConfigPackageNew)
+		require.NoError(t, err)
+		cc3configBytesNew, err := proto.Marshal(cc3CollConfigPackageNew)
+		require.NoError(t, err)
+
+		storedKVs := []*compositeKV{
+			{&compositeKey{ns: "lscc", key: "chaincode1~collection", blockNum: 100}, cc1configBytesNew},
+			{&compositeKey{ns: "lscc", key: "chaincode1~collection", blockNum: 50}, cc1configBytes},
+			{&compositeKey{ns: "lscc", key: "chaincode2~collection", blockNum: 100}, cc2configBytesNew},
+			{&compositeKey{ns: "lscc", key: "chaincode2~collection", blockNum: 50}, cc2configBytes},
+			{&compositeKey{ns: "lscc", key: "chaincode3~collection", blockNum: 100}, cc3configBytesNew},
+			{&compositeKey{ns: "lscc", key: "chaincode3~collection", blockNum: 50}, cc3configBytes},
+		}
+		return storedKVs, ccConfigInfo
 	}
-	verifyExportedConfigHistory(t, env.testSnapshotDir, fileHashes, expectedCollectionConfigs)
-	os.Remove(path.Join(env.testSnapshotDir, snapshotDataFileName))
-	os.Remove(path.Join(env.testSnapshotDir, snapshotMetadataFileName))
 
-	// config history database has 3 chaincodes each with 2 collection config entries in the
-	// collectionConfigNamespace
-	cc1collConfigPackageNew := testutilCreateCollConfigPkg([]string{"Explicit-cc1-coll-1", "Explicit-cc1-coll-2", "Explicit-cc1-coll-3"})
-	cc2collConfigPackageNew := testutilCreateCollConfigPkg([]string{"Explicit-cc2-coll-1", "Explicit-cc2-coll-2", "Explicit-cc2-coll-3"})
-	cc3collConfigPackageNew := testutilCreateCollConfigPkg([]string{"Explicit-cc3-coll-1", "Explicit-cc3-coll-2", "Explicit-cc3-coll-3"})
-	batch, err = prepareDBBatch(
-		map[string]*peer.CollectionConfigPackage{
-			"chaincode1": cc1collConfigPackageNew,
-			"chaincode2": cc2collConfigPackageNew,
-			"chaincode3": cc3collConfigPackageNew,
-		},
-		100,
-	)
-	assert.NoError(t, err)
-	assert.NoError(t, dbHandle.writeBatch(batch, true))
+	t.Run("confighistory is empty", func(t *testing.T) {
+		env := newTestEnvForSnapshot(t)
+		defer env.cleanup()
+		retriever := env.mgr.GetRetriever("ledger1")
+		fileHashes, err := retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
+		require.NoError(t, err)
+		require.Empty(t, fileHashes)
+		files, err := ioutil.ReadDir(env.testSnapshotDir)
+		require.NoError(t, err)
+		require.Len(t, files, 0)
+	})
 
-	fileHashes, err = env.retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
-	require.NoError(t, err)
+	t.Run("export confighistory", func(t *testing.T) {
+		// setup ledger1 => export ledger1
+		env := newTestEnvForSnapshot(t)
+		defer env.cleanup()
+		storedKVs, _ := setupWithSampleData(env, "ledger1")
+		retriever := env.mgr.GetRetriever("ledger1")
+		fileHashes, err := retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
+		require.NoError(t, err)
+		verifyExportedConfigHistory(t, env.testSnapshotDir, fileHashes, storedKVs)
+	})
 
-	cc1configBytesNew, err := proto.Marshal(cc1collConfigPackageNew)
-	require.NoError(t, err)
-	cc2configBytesNew, err := proto.Marshal(cc2collConfigPackageNew)
-	require.NoError(t, err)
-	cc3configBytesNew, err := proto.Marshal(cc3collConfigPackageNew)
-	require.NoError(t, err)
-	expectedCollectionConfigs = []*compositeKV{
-		{&compositeKey{ns: "lscc", key: "chaincode1~collection", blockNum: 100}, cc1configBytesNew},
-		{&compositeKey{ns: "lscc", key: "chaincode1~collection", blockNum: 50}, cc1configBytes},
-		{&compositeKey{ns: "lscc", key: "chaincode2~collection", blockNum: 100}, cc2configBytesNew},
-		{&compositeKey{ns: "lscc", key: "chaincode2~collection", blockNum: 50}, cc2configBytes},
-		{&compositeKey{ns: "lscc", key: "chaincode3~collection", blockNum: 100}, cc3configBytesNew},
-		{&compositeKey{ns: "lscc", key: "chaincode3~collection", blockNum: 50}, cc3configBytes},
-	}
-	verifyExportedConfigHistory(t, env.testSnapshotDir, fileHashes, expectedCollectionConfigs)
+	t.Run("import confighistory and verify queries", func(t *testing.T) {
+		// setup ledger1 => export ledger1 => import into ledger2
+		env := newTestEnvForSnapshot(t)
+		defer env.cleanup()
+		_, ccConfigInfo := setupWithSampleData(env, "ledger1")
+		retriever := env.mgr.GetRetriever("ledger1")
+		_, err := retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
+		require.NoError(t, err)
+
+		importConfigsBatchSize = 100
+		require.NoError(t, env.mgr.ImportFromSnapshot("ledger2", env.testSnapshotDir))
+
+		retriever = env.mgr.GetRetriever("ledger2")
+		verifyImportedConfigHistory(t, retriever, ccConfigInfo)
+	})
+
+	t.Run("export from an imported confighistory", func(t *testing.T) {
+		// setup ledger1 => export ledger1 => import into ledger2 => export ledger2
+		env := newTestEnvForSnapshot(t)
+		defer env.cleanup()
+		storedKVs, _ := setupWithSampleData(env, "ledger1")
+		retriever := env.mgr.GetRetriever("ledger1")
+		_, err := retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
+		require.NoError(t, err)
+
+		importConfigsBatchSize = 100
+		require.NoError(t, env.mgr.ImportFromSnapshot("ledger2", env.testSnapshotDir))
+		require.NoError(t, os.RemoveAll(filepath.Join(env.testSnapshotDir, snapshotDataFileName)))
+		require.NoError(t, os.RemoveAll(filepath.Join(env.testSnapshotDir, snapshotMetadataFileName)))
+
+		retriever = env.mgr.GetRetriever("ledger2")
+		fileHashes, err := retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
+		require.NoError(t, err)
+		verifyExportedConfigHistory(t, env.testSnapshotDir, fileHashes, storedKVs)
+	})
+
+	t.Run("import confighistory with no data and metadata files", func(t *testing.T) {
+		env := newTestEnvForSnapshot(t)
+		defer env.cleanup()
+		require.NoFileExists(t, filepath.Join(env.testSnapshotDir, snapshotDataFileName))
+		require.NoFileExists(t, filepath.Join(env.testSnapshotDir, snapshotMetadataFileName))
+		err := env.mgr.ImportFromSnapshot("ledger1", env.testSnapshotDir)
+		require.NoError(t, err)
+	})
+
+	t.Run("import confighistory - ledger exists error", func(t *testing.T) {
+		env := newTestEnvForSnapshot(t)
+		defer env.cleanup()
+		setupWithSampleData(env, "ledger1")
+		dataFileWriter, err := snapshot.CreateFile(filepath.Join(env.testSnapshotDir, snapshotDataFileName), snapshotFileFormat, testNewHashFunc)
+		require.NoError(t, err)
+		defer dataFileWriter.Close()
+		err = env.mgr.ImportFromSnapshot("ledger1", env.testSnapshotDir)
+		expectedErrStr := "config history for ledger [ledger1] exists. Incremental import is not supported. Remove the existing ledger data before retry"
+		require.EqualError(t, err, expectedErrStr)
+	})
+
+	t.Run("import confighistory - EOF error", func(t *testing.T) {
+		env := newTestEnvForSnapshot(t)
+		defer env.cleanup()
+		dataFileWriter1, err := snapshot.CreateFile(filepath.Join(env.testSnapshotDir, snapshotMetadataFileName), snapshotFileFormat, testNewHashFunc)
+		require.NoError(t, err)
+		defer dataFileWriter1.Close()
+		dataFileWriter2, err := snapshot.CreateFile(filepath.Join(env.testSnapshotDir, snapshotDataFileName), snapshotFileFormat, testNewHashFunc)
+		require.NoError(t, err)
+		defer dataFileWriter2.Close()
+		err = env.mgr.ImportFromSnapshot("ledger2", env.testSnapshotDir)
+		require.Contains(t, err.Error(), "error while reading from the snapshot file")
+		require.Contains(t, err.Error(), "confighistory.metadata: EOF")
+
+		require.NoError(t, os.RemoveAll(filepath.Join(env.testSnapshotDir, snapshotMetadataFileName)))
+		dataFileWriter3, err := snapshot.CreateFile(filepath.Join(env.testSnapshotDir, snapshotMetadataFileName), snapshotFileFormat, testNewHashFunc)
+		require.NoError(t, err)
+		defer dataFileWriter3.Close()
+		require.NoError(t, dataFileWriter3.EncodeUVarint(1))
+		_, err = dataFileWriter3.Done()
+		require.NoError(t, err)
+		err = env.mgr.ImportFromSnapshot("ledger2", env.testSnapshotDir)
+		require.Contains(t, err.Error(), "error while reading from the snapshot file")
+		require.Contains(t, err.Error(), "confighistory.data: EOF")
+	})
+
+	t.Run("import confighistory - leveldb iter error", func(t *testing.T) {
+		env := newTestEnvForSnapshot(t)
+		defer env.cleanup()
+		env.mgr.dbProvider.Close()
+		dataFileWriter, err := snapshot.CreateFile(filepath.Join(env.testSnapshotDir, snapshotDataFileName), snapshotFileFormat, testNewHashFunc)
+		require.NoError(t, err)
+		defer dataFileWriter.Close()
+		err = env.mgr.ImportFromSnapshot("ledger2", env.testSnapshotDir)
+		require.EqualError(t, err, "internal leveldb error while obtaining db iterator: leveldb: closed")
+	})
 }
 
 func verifyExportedConfigHistory(t *testing.T, dir string, fileHashes map[string][]byte, expectedCollectionConfigs []*compositeKV) {
@@ -388,13 +494,13 @@ func verifyExportedConfigHistory(t *testing.T, dir string, fileHashes map[string
 	require.Contains(t, fileHashes, snapshotDataFileName)
 	require.Contains(t, fileHashes, snapshotMetadataFileName)
 
-	dataFile := path.Join(dir, snapshotDataFileName)
+	dataFile := filepath.Join(dir, snapshotDataFileName)
 	dataFileContent, err := ioutil.ReadFile(dataFile)
 	require.NoError(t, err)
 	dataFileHash := sha256.Sum256(dataFileContent)
 	require.Equal(t, dataFileHash[:], fileHashes[snapshotDataFileName])
 
-	metadataFile := path.Join(dir, snapshotMetadataFileName)
+	metadataFile := filepath.Join(dir, snapshotMetadataFileName)
 	metadataFileContent, err := ioutil.ReadFile(metadataFile)
 	require.NoError(t, err)
 	metadataFileHash := sha256.Sum256(metadataFileContent)
@@ -424,43 +530,57 @@ func verifyExportedConfigHistory(t *testing.T, dir string, fileHashes map[string
 	require.Equal(t, expectedCollectionConfigs, retrievedCollectionConfigs)
 }
 
+func verifyImportedConfigHistory(t *testing.T, retriever *Retriever, expectedCCConfigInfo map[string][]*ledger.CollectionConfigInfo) {
+	for chaincodeName, ccConfigInfos := range expectedCCConfigInfo {
+		for _, expectedCCConfig := range ccConfigInfos {
+			ccConfig, err := retriever.MostRecentCollectionConfigBelow(expectedCCConfig.CommittingBlockNum+1, chaincodeName)
+			require.NoError(t, err)
+			require.True(t, proto.Equal(expectedCCConfig.CollectionConfig, ccConfig.CollectionConfig))
+			require.Equal(t, expectedCCConfig.CommittingBlockNum, ccConfig.CommittingBlockNum)
+		}
+	}
+}
+
 func TestExportConfigHistoryErrorCase(t *testing.T) {
 	env := newTestEnvForSnapshot(t)
 	defer env.cleanup()
 
-	dbHandle := env.mgr.dbProvider.getDB("ledger1")
+	db := env.mgr.dbProvider.getDB("ledger1")
 	cc1collConfigPackage := testutilCreateCollConfigPkg([]string{"Explicit-cc1-coll-1", "Explicit-cc1-coll-2"})
-	batch, err := prepareDBBatch(
+	batch := db.newBatch()
+	err := prepareDBBatch(
+		batch,
 		map[string]*peer.CollectionConfigPackage{
 			"chaincode1": cc1collConfigPackage,
 		},
 		50,
 	)
-	assert.NoError(t, err)
-	assert.NoError(t, dbHandle.writeBatch(batch, true))
+	require.NoError(t, err)
+	require.NoError(t, db.writeBatch(batch, true))
 
 	// error during data file creation
-	dataFilePath := path.Join(env.testSnapshotDir, snapshotDataFileName)
+	dataFilePath := filepath.Join(env.testSnapshotDir, snapshotDataFileName)
 	_, err = os.Create(dataFilePath)
 	require.NoError(t, err)
 
-	_, err = env.retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
+	retriever := env.mgr.GetRetriever("ledger1")
+	_, err = retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
 	require.Contains(t, err.Error(), "error while creating the snapshot file: "+dataFilePath)
 	os.RemoveAll(env.testSnapshotDir)
 
 	// error during metadata file creation
-	require.NoError(t, os.MkdirAll(env.testSnapshotDir, 0700))
-	metadataFilePath := path.Join(env.testSnapshotDir, snapshotMetadataFileName)
+	require.NoError(t, os.MkdirAll(env.testSnapshotDir, 0o700))
+	metadataFilePath := filepath.Join(env.testSnapshotDir, snapshotMetadataFileName)
 	_, err = os.Create(metadataFilePath)
 	require.NoError(t, err)
-	_, err = env.retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
+	_, err = retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
 	require.Contains(t, err.Error(), "error while creating the snapshot file: "+metadataFilePath)
 	os.RemoveAll(env.testSnapshotDir)
 
 	// error while reading from leveldb
-	require.NoError(t, os.MkdirAll(env.testSnapshotDir, 0700))
+	require.NoError(t, os.MkdirAll(env.testSnapshotDir, 0o700))
 	env.mgr.dbProvider.Close()
-	_, err = env.retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
+	_, err = retriever.ExportConfigHistory(env.testSnapshotDir, testNewHashFunc)
 	require.EqualError(t, err, "internal leveldb error while obtaining db iterator: leveldb: closed")
 	os.RemoveAll(env.testSnapshotDir)
 }
@@ -502,17 +622,4 @@ func testutilCreateCollConfigPkg(collNames []string) *peer.CollectionConfigPacka
 		)
 	}
 	return pkg
-}
-
-type dummyLedgerInfoRetriever struct {
-	info *common.BlockchainInfo
-	qe   *mock.QueryExecutor
-}
-
-func (d *dummyLedgerInfoRetriever) GetBlockchainInfo() (*common.BlockchainInfo, error) {
-	return d.info, nil
-}
-
-func (d *dummyLedgerInfoRetriever) NewQueryExecutor() (ledger.QueryExecutor, error) {
-	return d.qe, nil
 }

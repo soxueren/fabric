@@ -11,8 +11,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestVDBEnv provides a level db backed versioned db for testing
@@ -30,7 +29,7 @@ func NewTestVDBEnv(t testing.TB) *TestVDBEnv {
 		t.Fatalf("Failed to create leveldb directory: %s", err)
 	}
 	dbProvider, err := NewVersionedDBProvider(dbPath)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	return &TestVDBEnv{t, dbProvider, dbPath}
 }
 
@@ -40,12 +39,3 @@ func (env *TestVDBEnv) Cleanup() {
 	env.DBProvider.Close()
 	os.RemoveAll(env.dbPath)
 }
-
-var (
-	// TestEnvDBValueformat exports the constant to be used used for tests
-	TestEnvDBValueformat = fullScanIteratorValueFormat
-	// TestEnvDBValueDecoder exports the function for decoding the dbvalue bytes
-	TestEnvDBValueDecoder = func(dbValue []byte) (*statedb.VersionedValue, error) {
-		return decodeValue(dbValue)
-	}
-)

@@ -13,7 +13,7 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/internal/version"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewPubAndHashUpdates(t *testing.T) {
@@ -23,19 +23,19 @@ func TestNewPubAndHashUpdates(t *testing.T) {
 	}
 
 	actual := newPubAndHashUpdates()
-	assert.Equal(t, expected, actual)
+	require.Equal(t, expected, actual)
 }
 
 func TestContainsPostOrderWrites(t *testing.T) {
 	u := newPubAndHashUpdates()
 	rws := &rwsetutil.TxRwSet{}
-	u.applyWriteSet(rws, nil, nil, false)
-	assert.False(t, u.publicUpdates.ContainsPostOrderWrites)
-	u.applyWriteSet(rws, nil, nil, true)
-	assert.True(t, u.publicUpdates.ContainsPostOrderWrites)
+	require.NoError(t, u.applyWriteSet(rws, nil, nil, false))
+	require.False(t, u.publicUpdates.ContainsPostOrderWrites)
+	require.NoError(t, u.applyWriteSet(rws, nil, nil, true))
+	require.True(t, u.publicUpdates.ContainsPostOrderWrites)
 	// once set to true, should always return true
-	u.applyWriteSet(rws, nil, nil, false)
-	assert.True(t, u.publicUpdates.ContainsPostOrderWrites)
+	require.NoError(t, u.applyWriteSet(rws, nil, nil, false))
+	require.True(t, u.publicUpdates.ContainsPostOrderWrites)
 }
 
 func TestContainsPvtWrites_ReturnsTrue(t *testing.T) {
@@ -45,7 +45,7 @@ func TestContainsPvtWrites_ReturnsTrue(t *testing.T) {
 	tx1 := &transaction{rwset: trs1}
 
 	ret1 := tx1.containsPvtWrites()
-	assert.True(t, ret1)
+	require.True(t, ret1)
 }
 
 func TestContainsPvtWrites_ReturnsFalse(t *testing.T) {
@@ -54,7 +54,7 @@ func TestContainsPvtWrites_ReturnsFalse(t *testing.T) {
 	tx2 := &transaction{rwset: trs2}
 
 	ret2 := tx2.containsPvtWrites()
-	assert.False(t, ret2)
+	require.False(t, ret2)
 }
 
 func TestRetrieveHash(t *testing.T) {
@@ -63,15 +63,17 @@ func TestRetrieveHash(t *testing.T) {
 	ns1 := "ns1"
 	chrs1 := &rwsetutil.CollHashedRwSet{
 		CollectionName: coll1,
-		PvtRwSetHash:   expected}
+		PvtRwSetHash:   expected,
+	}
 	nrs1 := &rwsetutil.NsRwSet{
 		NameSpace:        ns1,
-		CollHashedRwSets: []*rwsetutil.CollHashedRwSet{chrs1}}
+		CollHashedRwSets: []*rwsetutil.CollHashedRwSet{chrs1},
+	}
 	trs1 := &rwsetutil.TxRwSet{NsRwSets: []*rwsetutil.NsRwSet{nrs1}}
 	tx1 := &transaction{rwset: trs1}
 
 	actual := tx1.retrieveHash(ns1, coll1)
-	assert.Equal(t, expected, actual)
+	require.Equal(t, expected, actual)
 }
 
 func TestRetrieveHash_RWSetIsNil(t *testing.T) {
@@ -80,7 +82,7 @@ func TestRetrieveHash_RWSetIsNil(t *testing.T) {
 	tx2 := &transaction{rwset: nil}
 
 	ret2 := tx2.retrieveHash(ns2, coll2)
-	assert.Nil(t, ret2)
+	require.Nil(t, ret2)
 }
 
 func TestRetrieveHash_NsRwSetsNotEqualsToNs(t *testing.T) {
@@ -88,12 +90,13 @@ func TestRetrieveHash_NsRwSetsNotEqualsToNs(t *testing.T) {
 	ns3 := "ns3"
 	nrs3 := &rwsetutil.NsRwSet{
 		NameSpace:        "ns",
-		CollHashedRwSets: []*rwsetutil.CollHashedRwSet{}}
+		CollHashedRwSets: []*rwsetutil.CollHashedRwSet{},
+	}
 	trs3 := &rwsetutil.TxRwSet{NsRwSets: []*rwsetutil.NsRwSet{nrs3}}
 	tx3 := &transaction{rwset: trs3}
 
 	ret3 := tx3.retrieveHash(ns3, coll3)
-	assert.Nil(t, ret3)
+	require.Nil(t, ret3)
 }
 
 func TestApplyWriteSet(t *testing.T) {
@@ -141,8 +144,8 @@ func TestApplyWriteSet(t *testing.T) {
 	testdb := testdbEnv.GetDBHandle("testdb")
 
 	// Call
-	pahu.applyWriteSet(txRWSet1, ver1, testdb, false)
+	require.NoError(t, pahu.applyWriteSet(txRWSet1, ver1, testdb, false))
 
 	// Check result
-	assert.Equal(t, expected, pahu)
+	require.Equal(t, expected, pahu)
 }

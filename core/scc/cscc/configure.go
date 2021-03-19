@@ -20,14 +20,12 @@ import (
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/channelconfig"
-	"github.com/hyperledger/fabric/common/config"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/aclmgmt"
 	"github.com/hyperledger/fabric/core/aclmgmt/resources"
 	"github.com/hyperledger/fabric/core/committer/txvalidator/v20/plugindispatcher"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/peer"
-	"github.com/hyperledger/fabric/core/policy"
 	"github.com/hyperledger/fabric/internal/pkg/txflags"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
@@ -40,13 +38,10 @@ func New(
 	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider,
 	lr plugindispatcher.LifecycleResources,
 	nr plugindispatcher.CollectionAndLifecycleResources,
-	policyChecker policy.PolicyChecker,
 	p *peer.Peer,
 	bccsp bccsp.BCCSP,
 ) *PeerConfiger {
 	return &PeerConfiger{
-		policyChecker:          policyChecker,
-		configMgr:              peer.NewConfigSupport(p),
 		aclProvider:            aclProvider,
 		deployedCCInfoProvider: deployedCCInfoProvider,
 		legacyLifecycle:        lr,
@@ -63,8 +58,6 @@ func (e *PeerConfiger) Chaincode() shim.Chaincode { return e }
 // configuration transaction coming in from the ordering service, the
 // committer calls this system chaincode to process the transaction.
 type PeerConfiger struct {
-	policyChecker          policy.PolicyChecker
-	configMgr              config.Manager
 	aclProvider            aclmgmt.ACLProvider
 	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider
 	legacyLifecycle        plugindispatcher.LifecycleResources
@@ -77,9 +70,12 @@ var cnflogger = flogging.MustGetLogger("cscc")
 
 // These are function names from Invoke first parameter
 const (
-	JoinChain      string = "JoinChain"
-	GetConfigBlock string = "GetConfigBlock"
-	GetChannels    string = "GetChannels"
+	JoinChain            string = "JoinChain"
+	JoinChainBySnapshot  string = "JoinChainBySnapshot"
+	JoinBySnapshotStatus string = "JoinBySnapshotStatus"
+	GetConfigBlock       string = "GetConfigBlock"
+	GetChannelConfig     string = "GetChannelConfig"
+	GetChannels          string = "GetChannels"
 )
 
 // Init is mostly useless from an SCC perspective
@@ -107,7 +103,7 @@ func (e *PeerConfiger) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 
 	fname := string(args[0])
 
-	if fname != GetChannels && len(args) < 2 {
+	if fname != GetChannels && fname != JoinBySnapshotStatus && len(args) < 2 {
 		return shim.Error(fmt.Sprintf("Incorrect number of arguments, %d", len(args)))
 	}
 
@@ -174,6 +170,21 @@ func (e *PeerConfiger) InvokeNoShim(args [][]byte, sp *pb.SignedProposal) pb.Res
 		}
 
 		return e.joinChain(cid, block, e.deployedCCInfoProvider, e.legacyLifecycle, e.newLifecycle)
+	case JoinChainBySnapshot:
+		if len(args[1]) == 0 {
+			return shim.Error("Cannot join the channel, no snapshot directory provided")
+		}
+		// check policy
+		if err = e.aclProvider.CheckACL(resources.Cscc_JoinChainBySnapshot, "", sp); err != nil {
+			return shim.Error(fmt.Sprintf("access denied for [%s]: [%s]", fname, err))
+		}
+		snapshotDir := string(args[1])
+		return e.JoinChainBySnapshot(snapshotDir, e.deployedCCInfoProvider, e.legacyLifecycle, e.newLifecycle)
+	case JoinBySnapshotStatus:
+		if err = e.aclProvider.CheckACL(resources.Cscc_JoinBySnapshotStatus, "", sp); err != nil {
+			return shim.Error(fmt.Sprintf("access denied for [%s]: %s", fname, err))
+		}
+		return e.joinBySnapshotStatus()
 	case GetConfigBlock:
 		// 2. check policy
 		if err = e.aclProvider.CheckACL(resources.Cscc_GetConfigBlock, string(args[1]), sp); err != nil {
@@ -181,6 +192,14 @@ func (e *PeerConfiger) InvokeNoShim(args [][]byte, sp *pb.SignedProposal) pb.Res
 		}
 
 		return e.getConfigBlock(args[1])
+	case GetChannelConfig:
+		if len(args[1]) == 0 {
+			return shim.Error("empty channel name provided")
+		}
+		if err = e.aclProvider.CheckACL(resources.Cscc_GetChannelConfig, string(args[1]), sp); err != nil {
+			return shim.Error(fmt.Sprintf("access denied for [%s][%s]: %s", fname, args[1], err))
+		}
+		return e.getChannelConfig(args[1])
 	case GetChannels:
 		// 2. check get channels policy
 		if err = e.aclProvider.CheckACL(resources.Cscc_GetChannels, "", sp); err != nil {
@@ -249,6 +268,20 @@ func (e *PeerConfiger) joinChain(
 	return shim.Success(nil)
 }
 
+// JohnChainBySnapshot will join the channel by the specified snapshot.
+func (e *PeerConfiger) JoinChainBySnapshot(
+	snapshotDir string,
+	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider,
+	lr plugindispatcher.LifecycleResources,
+	nr plugindispatcher.CollectionAndLifecycleResources,
+) pb.Response {
+	if err := e.peer.CreateChannelFromSnapshot(snapshotDir, deployedCCInfoProvider, lr, nr); err != nil {
+		return shim.Error(err.Error())
+	}
+
+	return shim.Success(nil)
+}
+
 // Return the current configuration block for the specified channelID. If the
 // peer doesn't belong to the channel, return error
 func (e *PeerConfiger) getConfigBlock(channelID []byte) pb.Response {
@@ -273,6 +306,23 @@ func (e *PeerConfiger) getConfigBlock(channelID []byte) pb.Response {
 	return shim.Success(blockBytes)
 }
 
+func (e *PeerConfiger) getChannelConfig(channelID []byte) pb.Response {
+	channel := e.peer.Channel(string(channelID))
+	if channel == nil {
+		return shim.Error(fmt.Sprintf("unknown channel ID, %s", string(channelID)))
+	}
+	channelConfig, err := peer.RetrievePersistedChannelConfig(channel.Ledger())
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
+	channelConfigBytes, err := protoutil.Marshal(channelConfig)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	return shim.Success(channelConfigBytes)
+}
+
 // getChannels returns information about all channels for this peer
 func (e *PeerConfiger) getChannels() pb.Response {
 	channelInfoArray := e.peer.GetChannelsInfo()
@@ -286,4 +336,16 @@ func (e *PeerConfiger) getChannels() pb.Response {
 	}
 
 	return shim.Success(cqrbytes)
+}
+
+// joinBySnapshotStatus returns information about joinbysnapshot running status.
+func (e *PeerConfiger) joinBySnapshotStatus() pb.Response {
+	status := e.peer.JoinBySnaphotStatus()
+
+	statusBytes, err := proto.Marshal(status)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+
+	return shim.Success(statusBytes)
 }

@@ -44,19 +44,3 @@ func decodeVersionAndMetadata(encodedstr string) (*version.Height, []byte, error
 	}
 	return ver, versionAndMetadata.Metadata, nil
 }
-
-func encodeValueVersionMetadata(value, versionAndMetadata []byte) ([]byte, error) {
-	val := &ValueVersionMetadata{
-		Value:              value,
-		VersionAndMetadata: versionAndMetadata,
-	}
-	return proto.Marshal(val)
-}
-
-func decodeValueVersionMetadata(encodedMsg []byte) (*ValueVersionMetadata, error) {
-	val := &ValueVersionMetadata{}
-	if err := proto.Unmarshal(encodedMsg, val); err != nil {
-		return nil, err
-	}
-	return val, nil
-}

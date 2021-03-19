@@ -26,15 +26,18 @@ type BlockStore struct {
 
 // newBlockStore constructs a `BlockStore`
 func newBlockStore(id string, conf *Conf, indexConfig *IndexConfig,
-	dbHandle *leveldbhelper.DBHandle, stats *stats) *BlockStore {
-	fileMgr := newBlockfileMgr(id, conf, indexConfig, dbHandle)
+	dbHandle *leveldbhelper.DBHandle, stats *stats) (*BlockStore, error) {
+	fileMgr, err := newBlockfileMgr(id, conf, indexConfig, dbHandle)
+	if err != nil {
+		return nil, err
+	}
 
 	// create ledgerStats and initialize blockchain_height stat
 	ledgerStats := stats.ledgerStats(id)
 	info := fileMgr.getBlockchainInfo()
 	ledgerStats.updateBlockchainHeight(info.Height)
 
-	return &BlockStore{id, conf, fileMgr, ledgerStats}
+	return &BlockStore{id, conf, fileMgr, ledgerStats}, nil
 }
 
 // AddBlock adds a new block
@@ -67,6 +70,11 @@ func (store *BlockStore) RetrieveBlockByHash(blockHash []byte) (*common.Block, e
 // RetrieveBlockByNumber returns the block at a given blockchain height
 func (store *BlockStore) RetrieveBlockByNumber(blockNum uint64) (*common.Block, error) {
 	return store.fileMgr.retrieveBlockByNumber(blockNum)
+}
+
+// TxIDExists returns true if a transaction with the txID is ever committed
+func (store *BlockStore) TxIDExists(txID string) (bool, error) {
+	return store.fileMgr.txIDExists(txID)
 }
 
 // RetrieveTxByID returns a transaction for given transaction id

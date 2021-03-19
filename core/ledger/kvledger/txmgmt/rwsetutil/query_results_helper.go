@@ -106,7 +106,9 @@ func (helper *RangeQueryResultsHelper) Done() ([]*kvrwset.KVRead, *kvrwset.Query
 			return helper.pendingResults, nil, err
 		}
 	}
-	helper.mt.done()
+	if err := helper.mt.done(); err != nil {
+		return nil, nil, err
+	}
 	return helper.pendingResults, helper.mt.getSummery(), nil
 }
 
@@ -132,8 +134,7 @@ func (helper *RangeQueryResultsHelper) processPendingResults() error {
 	if err != nil {
 		return err
 	}
-	helper.mt.update(hash)
-	return nil
+	return helper.mt.update(hash)
 }
 
 func serializeKVReads(kvReads []*kvrwset.KVRead) ([]byte, error) {
@@ -229,9 +230,11 @@ func (m *merkleTree) done() error {
 }
 
 func (m *merkleTree) getSummery() *kvrwset.QueryReadsMerkleSummary {
-	return &kvrwset.QueryReadsMerkleSummary{MaxDegree: m.maxDegree,
+	return &kvrwset.QueryReadsMerkleSummary{
+		MaxDegree:      m.maxDegree,
 		MaxLevel:       uint32(m.getMaxLevel()),
-		MaxLevelHashes: hashesToBytes(m.getMaxLevelHashes())}
+		MaxLevelHashes: hashesToBytes(m.getMaxLevelHashes()),
+	}
 }
 
 func (m *merkleTree) getMaxLevel() MerkleTreeLevel {

@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package blkstorage
 
 import (
+	"fmt"
 	"io/ioutil"
 	"math"
 	"os"
@@ -19,7 +20,6 @@ import (
 	"github.com/hyperledger/fabric/common/metrics"
 	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/protoutil"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,7 +59,7 @@ func newTestEnvWithMetricsProvider(t testing.TB, conf *Conf, metricsProvider met
 func newTestEnvSelectiveIndexing(t testing.TB, conf *Conf, attrsToIndex []IndexableAttr, metricsProvider metrics.Provider) *testEnv {
 	indexConfig := &IndexConfig{AttrsToIndex: attrsToIndex}
 	p, err := NewProvider(conf, indexConfig, metricsProvider)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	return &testEnv{t, p}
 }
 
@@ -80,59 +80,66 @@ type testBlockfileMgrWrapper struct {
 
 func newTestBlockfileWrapper(env *testEnv, ledgerid string) *testBlockfileMgrWrapper {
 	blkStore, err := env.provider.Open(ledgerid)
-	assert.NoError(env.t, err)
+	require.NoError(env.t, err)
 	return &testBlockfileMgrWrapper{env.t, blkStore.fileMgr}
 }
 
 func (w *testBlockfileMgrWrapper) addBlocks(blocks []*common.Block) {
 	for _, blk := range blocks {
 		err := w.blockfileMgr.addBlock(blk)
-		assert.NoError(w.t, err, "Error while adding block to blockfileMgr")
+		require.NoError(w.t, err, "Error while adding block to blockfileMgr")
 	}
 }
 
-func (w *testBlockfileMgrWrapper) testGetBlockByHash(blocks []*common.Block, expectedErr error) {
+func (w *testBlockfileMgrWrapper) testGetBlockByHash(blocks []*common.Block) {
 	for i, block := range blocks {
 		hash := protoutil.BlockHeaderHash(block.Header)
 		b, err := w.blockfileMgr.retrieveBlockByHash(hash)
-		if expectedErr != nil {
-			assert.Error(w.t, err, expectedErr.Error())
-			continue
-		}
-		assert.NoError(w.t, err, "Error while retrieving [%d]th block from blockfileMgr", i)
-		assert.Equal(w.t, block, b)
+		require.NoError(w.t, err, "Error while retrieving [%d]th block from blockfileMgr", i)
+		require.Equal(w.t, block, b)
 	}
 }
 
-func (w *testBlockfileMgrWrapper) testGetBlockByNumber(blocks []*common.Block, startingNum uint64, expectedErr error) {
+func (w *testBlockfileMgrWrapper) testGetBlockByNumber(blocks []*common.Block) {
 	for i := 0; i < len(blocks); i++ {
-		b, err := w.blockfileMgr.retrieveBlockByNumber(startingNum + uint64(i))
-		if expectedErr != nil {
-			assert.Equal(w.t, err.Error(), expectedErr.Error())
-			continue
-		}
-		assert.NoError(w.t, err, "Error while retrieving [%d]th block from blockfileMgr", i)
-		assert.Equal(w.t, blocks[i], b)
+		b, err := w.blockfileMgr.retrieveBlockByNumber(blocks[0].Header.Number + uint64(i))
+		require.NoError(w.t, err, "Error while retrieving [%d]th block from blockfileMgr", i)
+		require.Equal(w.t, blocks[i], b)
 	}
 	// test getting the last block
 	b, err := w.blockfileMgr.retrieveBlockByNumber(math.MaxUint64)
 	iLastBlock := len(blocks) - 1
-	assert.NoError(w.t, err, "Error while retrieving last block from blockfileMgr")
-	assert.Equal(w.t, blocks[iLastBlock], b)
+	require.NoError(w.t, err, "Error while retrieving last block from blockfileMgr")
+	require.Equal(w.t, blocks[iLastBlock], b)
 }
 
-func (w *testBlockfileMgrWrapper) testGetBlockByTxID(blocks []*common.Block, expectedErr error) {
+func (w *testBlockfileMgrWrapper) testGetBlockByTxID(blocks []*common.Block) {
 	for i, block := range blocks {
 		for _, txEnv := range block.Data.Data {
 			txID, err := protoutil.GetOrComputeTxIDFromEnvelope(txEnv)
-			assert.NoError(w.t, err)
+			require.NoError(w.t, err)
 			b, err := w.blockfileMgr.retrieveBlockByTxID(txID)
-			if expectedErr != nil {
-				assert.Equal(w.t, err.Error(), expectedErr.Error())
-				continue
-			}
-			assert.NoError(w.t, err, "Error while retrieving [%d]th block from blockfileMgr", i)
-			assert.Equal(w.t, block, b)
+			require.NoError(w.t, err, "Error while retrieving [%d]th block from blockfileMgr", i)
+			require.Equal(w.t, block, b)
+		}
+	}
+}
+
+func (w *testBlockfileMgrWrapper) testGetBlockByHashNotIndexed(blocks []*common.Block) {
+	for _, block := range blocks {
+		hash := protoutil.BlockHeaderHash(block.Header)
+		_, err := w.blockfileMgr.retrieveBlockByHash(hash)
+		require.EqualError(w.t, err, fmt.Sprintf("no such block hash [%x] in index", hash))
+	}
+}
+
+func (w *testBlockfileMgrWrapper) testGetBlockByTxIDNotIndexed(blocks []*common.Block) {
+	for _, block := range blocks {
+		for _, txEnv := range block.Data.Data {
+			txID, err := protoutil.GetOrComputeTxIDFromEnvelope(txEnv)
+			require.NoError(w.t, err)
+			_, err = w.blockfileMgr.retrieveBlockByTxID(txID)
+			require.EqualError(w.t, err, fmt.Sprintf("no such transaction ID [%s] in index", txID))
 		}
 	}
 }
@@ -140,12 +147,12 @@ func (w *testBlockfileMgrWrapper) testGetBlockByTxID(blocks []*common.Block, exp
 func (w *testBlockfileMgrWrapper) testGetTransactionByTxID(txID string, expectedEnvelope []byte, expectedErr error) {
 	envelope, err := w.blockfileMgr.retrieveTransactionByID(txID)
 	if expectedErr != nil {
-		assert.Equal(w.t, err.Error(), expectedErr.Error())
+		require.Equal(w.t, err.Error(), expectedErr.Error())
 		return
 	}
 	actualEnvelope, err := proto.Marshal(envelope)
-	assert.NoError(w.t, err)
-	assert.Equal(w.t, expectedEnvelope, actualEnvelope)
+	require.NoError(w.t, err)
+	require.Equal(w.t, expectedEnvelope, actualEnvelope)
 }
 
 func (w *testBlockfileMgrWrapper) testGetMultipleDataByTxID(
@@ -153,9 +160,10 @@ func (w *testBlockfileMgrWrapper) testGetMultipleDataByTxID(
 	expectedData []*expectedBlkTxValidationCode,
 ) {
 	rangescan := constructTxIDRangeScan(txID)
-	itr := w.blockfileMgr.db.GetIterator(rangescan.startKey, rangescan.stopKey)
-	defer itr.Release()
+	itr, err := w.blockfileMgr.db.GetIterator(rangescan.startKey, rangescan.stopKey)
 	require := require.New(w.t)
+	require.NoError(err)
+	defer itr.Release()
 
 	fetchedData := []*expectedBlkTxValidationCode{}
 	for itr.Next() {

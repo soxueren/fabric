@@ -22,6 +22,11 @@ import (
 	"github.com/hyperledger/fabric/common/metrics"
 )
 
+const (
+	GoLevelDB = "goleveldb"
+	CouchDB   = "CouchDB"
+)
+
 // Initializer encapsulates dependencies for PeerLedgerProvider
 type Initializer struct {
 	StateListeners                  []StateListener
@@ -52,7 +57,7 @@ type Config struct {
 // StateDBConfig is a structure used to configure the state parameters for the ledger.
 type StateDBConfig struct {
 	// StateDatabase is the database to use for storing last known state.  The
-	// two supported options are "goleveldb" and "CouchDB".
+	// two supported options are "goleveldb" and "CouchDB" (captured in the constants GoLevelDB and CouchDB respectively).
 	StateDatabase string
 	// CouchDB is the configuration for CouchDB.  It is used when StateDatabase
 	// is set to "CouchDB".
@@ -82,9 +87,6 @@ type CouchDBConfig struct {
 	// MaxBatchUpdateSize is the maximum number of records to included in CouchDB
 	// bulk update operations.
 	MaxBatchUpdateSize int
-	// WarmIndexesAfterNBlocks is the number of blocks after which to warm any
-	// CouchDB indexes.
-	WarmIndexesAfterNBlocks int
 	// CreateGlobalChangesDB determines whether or not to create the "_global_changes"
 	// system database.
 	CreateGlobalChangesDB bool
@@ -108,6 +110,14 @@ type PrivateDataConfig struct {
 	// PurgeInterval is the number of blocks to wait until purging expired
 	// private data entries.
 	PurgeInterval int
+	// The missing data entries are classified into three categories:
+	// (1) eligible prioritized
+	// (2) eligible deprioritized
+	// (3) ineligible
+	// The reconciler would fetch the eligible prioritized missing data
+	// from other peers. A chance for eligible deprioritized missing data
+	// would be given after every DeprioritizedDataReconcilerInterval
+	DeprioritizedDataReconcilerInterval time.Duration
 }
 
 // HistoryDBConfig is a structure used to configure the transaction history database.
@@ -123,10 +133,13 @@ type SnapshotsConfig struct {
 
 // PeerLedgerProvider provides handle to ledger instances
 type PeerLedgerProvider interface {
-	// Create creates a new ledger with the given genesis block.
+	// CreateFromGenesisBlock creates a new ledger with the given genesis block.
 	// This function guarantees that the creation of ledger and committing the genesis block would an atomic action
-	// The chain id retrieved from the genesis block is treated as a ledger id
-	Create(genesisBlock *common.Block) (PeerLedger, error)
+	// The channel id retrieved from the genesis block is treated as a ledger id
+	CreateFromGenesisBlock(genesisBlock *common.Block) (PeerLedger, error)
+	// CreateFromSnapshot creates a new ledger from a snapshot and returns the ledger and channel id.
+	// The channel id retrieved from snapshot metadata is treated as a ledger id
+	CreateFromSnapshot(snapshotDir string) (PeerLedger, string, error)
 	// Open opens an already created ledger
 	Open(ledgerID string) (PeerLedger, error)
 	// Exists tells whether the ledger with given id exists
@@ -141,6 +154,9 @@ type PeerLedgerProvider interface {
 // that tells apart valid transactions from invalid ones
 type PeerLedger interface {
 	commonledger.Ledger
+	// TxIDExists returns true if the specified txID is already present in one of the already committed blocks.
+	// This function returns error only if there is an underlying condition that prevents checking for the txID, such as an I/O error.
+	TxIDExists(txID string) (bool, error)
 	// GetTransactionByID retrieves a transaction by id
 	GetTransactionByID(txID string) (*peer.ProcessedTransaction, error)
 	// GetBlockByHash returns a block given it's hash
@@ -178,7 +194,7 @@ type PeerLedger interface {
 	// If hashes for some of the private data supplied in this function does not match
 	// the corresponding hash present in the block, the unmatched private data is not
 	// committed and instead the mismatch inforation is returned back
-	CommitPvtDataOfOldBlocks(reconciledPvtdata []*ReconciledPvtdata) ([]*PvtdataHashMismatch, error)
+	CommitPvtDataOfOldBlocks(reconciledPvtdata []*ReconciledPvtdata, unreconciled MissingPvtDataInfo) ([]*PvtdataHashMismatch, error)
 	// GetMissingPvtDataTracker return the MissingPvtDataTracker
 	GetMissingPvtDataTracker() (MissingPvtDataTracker, error)
 	// DoesPvtDataInfoExist returns true when
@@ -187,6 +203,25 @@ type PeerLedger interface {
 	//     missing info is recorded in the ledger (or)
 	// (3) the block is committed and does not contain any pvtData.
 	DoesPvtDataInfoExist(blockNum uint64) (bool, error)
+
+	// SubmitSnapshotRequest submits a snapshot request for the specified height.
+	// The request will be stored in the ledger until the ledger's block height is equal to
+	// the specified height and the snapshot generation is completed.
+	// When height is 0, it will generate a snapshot at the current block height.
+	// It returns an error if the specified height is smaller than the ledger's block height.
+	SubmitSnapshotRequest(height uint64) error
+	// CancelSnapshotRequest cancels the previously submitted request.
+	// It returns an error if such a request does not exist or is under processing.
+	CancelSnapshotRequest(height uint64) error
+	// PendingSnapshotRequests returns a list of heights for the pending (or under processing) snapshot requests.
+	PendingSnapshotRequests() ([]uint64, error)
+	// CommitNotificationsChannel returns a read-only channel on which ledger sends a `CommitNotification`
+	// when a block is committed. The CommitNotification contains entries for the transactions from the committed block,
+	// which are not malformed, carry a legitimate TxID, and in addition, are not marked as a duplicate transaction.
+	// The consumer can close the 'done' channel to signal that the notifications are no longer needed. This will cause the
+	// CommitNotifications channel to close. There is expected to be only one consumer at a time. The function returns error
+	// if already a CommitNotification channel is active.
+	CommitNotificationsChannel(done <-chan struct{}) (<-chan *CommitNotification, error)
 }
 
 // SimpleQueryExecutor encapsulates basic functions
@@ -330,16 +365,16 @@ type MissingPvtData struct {
 	IsEligible bool
 }
 
-// TxMissingPvtDataMap is a map from txNum to the list of
+// TxMissingPvtData is a map from txNum to the list of
 // missing pvtData
-type TxMissingPvtDataMap map[uint64][]*MissingPvtData
+type TxMissingPvtData map[uint64][]*MissingPvtData
 
 // BlockAndPvtData encapsulates the block and a map that contains the tuples <seqInBlock, *TxPvtData>
 // The map is expected to contain the entries only for the transactions that has associated pvt data
 type BlockAndPvtData struct {
 	Block          *common.Block
 	PvtData        TxPvtDataMap
-	MissingPvtData TxMissingPvtDataMap
+	MissingPvtData TxMissingPvtData
 }
 
 // ReconciledPvtdata contains the private data for a block for reconciliation
@@ -349,7 +384,7 @@ type ReconciledPvtdata struct {
 }
 
 // Add adds a given missing private data in the MissingPrivateDataList
-func (txMissingPvtData TxMissingPvtDataMap) Add(txNum uint64, ns, coll string, isEligible bool) {
+func (txMissingPvtData TxMissingPvtData) Add(txNum uint64, ns, coll string, isEligible bool) {
 	txMissingPvtData[txNum] = append(txMissingPvtData[txNum], &MissingPvtData{ns, coll, isEligible})
 }
 
@@ -380,7 +415,7 @@ type CollectionPvtdataInfo struct {
 // private data for use at commit time
 type BlockPvtdata struct {
 	PvtData        TxPvtDataMap
-	MissingPvtData TxMissingPvtDataMap
+	MissingPvtData TxMissingPvtData
 }
 
 // CommitOptions encapsulates options associated with a block commit.
@@ -499,7 +534,6 @@ type KVStateUpdates struct {
 
 // ConfigHistoryRetriever allow retrieving history of collection configs
 type ConfigHistoryRetriever interface {
-	CollectionConfigAt(blockNum uint64, chaincodeName string) (*CollectionConfigInfo, error)
 	MostRecentCollectionConfigBelow(blockNum uint64, chaincodeName string) (*CollectionConfigInfo, error)
 }
 
@@ -540,26 +574,8 @@ func (missingPvtDataInfo MissingPvtDataInfo) Add(blkNum, txNum uint64, ns, coll 
 	missingBlockPvtDataInfo[txNum] = append(missingBlockPvtDataInfo[txNum],
 		&MissingCollectionPvtDataInfo{
 			Namespace:  ns,
-			Collection: coll})
-}
-
-// ErrCollectionConfigNotYetAvailable is an error which is returned from the function
-// ConfigHistoryRetriever.CollectionConfigAt() if the latest block number committed
-// is lower than the block number specified in the request.
-type ErrCollectionConfigNotYetAvailable struct {
-	MaxBlockNumCommitted uint64
-	Msg                  string
-}
-
-func (e *ErrCollectionConfigNotYetAvailable) Error() string {
-	return e.Msg
-}
-
-// NotFoundInIndexErr is used to indicate missing entry in the index
-type NotFoundInIndexErr string
-
-func (NotFoundInIndexErr) Error() string {
-	return "Entry not found in index"
+			Collection: coll,
+		})
 }
 
 // CollConfigNotDefinedError is returned whenever an operation
@@ -584,11 +600,11 @@ func (e *InvalidCollNameError) Error() string {
 
 // PvtdataHashMismatch is used when the hash of private write-set
 // does not match the corresponding hash present in the block
-// See function `PeerLedger.CommitPvtData` for the usages
+// or there is a mismatch with the boot-KV-hashes present in the
+// private block store if the legder is created from a snapshot
 type PvtdataHashMismatch struct {
 	BlockNum, TxNum       uint64
 	Namespace, Collection string
-	ExpectedHash          []byte
 }
 
 // DeployedChaincodeInfoProvider is a dependency that is used by ledger to build collection config history
@@ -642,6 +658,8 @@ type ChaincodeLifecycleDetails struct {
 type MembershipInfoProvider interface {
 	// AmMemberOf checks whether the current peer is a member of the given collection
 	AmMemberOf(channelName string, collectionPolicyConfig *peer.CollectionPolicyConfig) (bool, error)
+	// MyImplicitCollectionName returns the name of the implicit collection for the current peer
+	MyImplicitCollectionName() string
 }
 
 type HealthCheckRegistry interface {
@@ -677,8 +695,13 @@ func (cdef *ChaincodeDefinition) String() string {
 	return fmt.Sprintf("Name=%s, Version=%s, Hash=%#v", cdef.Name, cdef.Version, cdef.Hash)
 }
 
+// ChaincodeLifecycleEventProvider enables ledger to create indexes in the statedb
 type ChaincodeLifecycleEventProvider interface {
-	RegisterListener(channelID string, listener ChaincodeLifecycleEventListener)
+	// RegisterListener is used by ledger to receive a callback alongwith dbArtifacts when a chaincode becomes invocable on the peer
+	// In addition, if needsExistingChaincodesDefinitions is true, the provider calls back the listener with existing invocable chaincodes
+	// This parameter is used when we create a ledger from a snapshot so that we can create indexes for the existing invocable chaincodes
+	// already defined in the imported ledger data
+	RegisterListener(channelID string, listener ChaincodeLifecycleEventListener, needsExistingChaincodesDefinitions bool) error
 }
 
 // CustomTxProcessor allows to generate simulation results during commit time for custom transactions.
@@ -708,6 +731,11 @@ func (e *InvalidTxError) Error() string {
 // Currently works at a stepping stone to decrease surface area of bccsp
 type HashProvider interface {
 	GetHash(opts bccsp.HashOpts) (hash.Hash, error)
+}
+
+type CommitNotification struct {
+	BlockNumber         uint64
+	TxIDValidationCodes map[string]peer.TxValidationCode
 }
 
 //go:generate counterfeiter -o mock/state_listener.go -fake-name StateListener . StateListener

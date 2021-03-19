@@ -7,8 +7,6 @@ SPDX-License-Identifier: Apache-2.0
 package txmgr
 
 import (
-	"fmt"
-
 	"github.com/hyperledger/fabric-protos-go/ledger/queryresult"
 	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
 	commonledger "github.com/hyperledger/fabric/common/ledger"
@@ -214,9 +212,10 @@ func (q *queryExecutor) GetPrivateData(ns, coll, key string) ([]byte, error) {
 		return nil, err
 	}
 	if !version.AreSame(hashVersion, ver) {
-		return nil, &ErrPvtdataNotAvailable{Msg: fmt.Sprintf(
+		return nil, errors.Errorf(
 			"private data matching public hash version is not available. Public hash version = %s, Private data version = %s",
-			hashVersion, ver)}
+			hashVersion, ver,
+		)
 	}
 	if q.collectReadset {
 		q.rwsetBuilder.AddToHashedReadSet(ns, coll, key, ver)
@@ -437,12 +436,18 @@ func (itr *resultsItr) Next() (commonledger.QueryResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	itr.updateRangeQueryInfo(queryResult)
+	if err := itr.updateRangeQueryInfo(queryResult); err != nil {
+		return nil, err
+	}
 	if queryResult == nil {
 		return nil, nil
 	}
-	versionedKV := queryResult.(*statedb.VersionedKV)
-	return &queryresult.KV{Namespace: versionedKV.Namespace, Key: versionedKV.Key, Value: versionedKV.Value}, nil
+
+	return &queryresult.KV{
+		Namespace: queryResult.Namespace,
+		Key:       queryResult.Key,
+		Value:     queryResult.Value,
+	}, nil
 }
 
 // GetBookmarkAndClose implements method in interface ledger.ResultsIterator
@@ -459,9 +464,9 @@ func (itr *resultsItr) GetBookmarkAndClose() string {
 //                                  because, we do not know if the caller is again going to invoke Next() or not.
 //                            or b) the last key that was supplied in the original query (if the iterator is exhausted)
 // 2) The ItrExhausted - set to true if the iterator is going to return nil as a result of the Next() call
-func (itr *resultsItr) updateRangeQueryInfo(queryResult statedb.QueryResult) {
+func (itr *resultsItr) updateRangeQueryInfo(queryResult *statedb.VersionedKV) error {
 	if itr.rwSetBuilder == nil {
-		return
+		return nil
 	}
 
 	if queryResult == nil {
@@ -469,13 +474,16 @@ func (itr *resultsItr) updateRangeQueryInfo(queryResult statedb.QueryResult) {
 		// So, set the endKey to the actual endKey supplied in the query
 		itr.rangeQueryInfo.ItrExhausted = true
 		itr.rangeQueryInfo.EndKey = itr.endKey
-		return
+		return nil
 	}
-	versionedKV := queryResult.(*statedb.VersionedKV)
-	itr.rangeQueryResultsHelper.AddResult(rwsetutil.NewKVRead(versionedKV.Key, versionedKV.Version))
+
+	if err := itr.rangeQueryResultsHelper.AddResult(rwsetutil.NewKVRead(queryResult.Key, queryResult.Version)); err != nil {
+		return err
+	}
 	// Set the end key to the latest key retrieved by the caller.
 	// Because, the caller may actually not invoke the Next() function again
-	itr.rangeQueryInfo.EndKey = versionedKV.Key
+	itr.rangeQueryInfo.EndKey = queryResult.Key
+	return nil
 }
 
 // Close implements method in interface ledger.ResultsIterator
@@ -490,7 +498,6 @@ type queryResultsItr struct {
 
 // Next implements method in interface ledger.ResultsIterator
 func (itr *queryResultsItr) Next() (commonledger.QueryResult, error) {
-
 	queryResult, err := itr.DBItr.Next()
 	if err != nil {
 		return nil, err
@@ -498,13 +505,16 @@ func (itr *queryResultsItr) Next() (commonledger.QueryResult, error) {
 	if queryResult == nil {
 		return nil, nil
 	}
-	versionedQueryRecord := queryResult.(*statedb.VersionedKV)
-	logger.Debugf("queryResultsItr.Next() returned a record:%s", string(versionedQueryRecord.Value))
+	logger.Debugf("queryResultsItr.Next() returned a record:%s", string(queryResult.Value))
 
 	if itr.RWSetBuilder != nil {
-		itr.RWSetBuilder.AddToReadSet(versionedQueryRecord.Namespace, versionedQueryRecord.Key, versionedQueryRecord.Version)
+		itr.RWSetBuilder.AddToReadSet(queryResult.Namespace, queryResult.Key, queryResult.Version)
 	}
-	return &queryresult.KV{Namespace: versionedQueryRecord.Namespace, Key: versionedQueryRecord.Key, Value: versionedQueryRecord.Value}, nil
+	return &queryresult.KV{
+		Namespace: queryResult.Namespace,
+		Key:       queryResult.Key,
+		Value:     queryResult.Value,
+	}, nil
 }
 
 // Close implements method in interface ledger.ResultsIterator
@@ -548,11 +558,10 @@ func (itr *pvtdataResultsItr) Next() (commonledger.QueryResult, error) {
 	if queryResult == nil {
 		return nil, nil
 	}
-	versionedQueryRecord := queryResult.(*statedb.VersionedKV)
 	return &queryresult.KV{
 		Namespace: itr.ns,
-		Key:       versionedQueryRecord.Key,
-		Value:     versionedQueryRecord.Value,
+		Key:       queryResult.Key,
+		Value:     queryResult.Value,
 	}, nil
 }
 

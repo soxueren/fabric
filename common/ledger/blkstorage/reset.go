@@ -13,7 +13,7 @@ import (
 	"path"
 	"strconv"
 
-	"github.com/hyperledger/fabric/common/ledger/util"
+	"github.com/hyperledger/fabric/internal/fileutil"
 )
 
 // ResetBlockStore drops the block storage index and truncates the blocks files for all channels/ledgers to genesis blocks
@@ -31,7 +31,7 @@ func ResetBlockStore(blockStorageDir string) error {
 		logger.Infof("Dir [%s] missing... exiting", chainsDir)
 		return nil
 	}
-	ledgerIDs, err := util.ListSubdirs(chainsDir)
+	ledgerIDs, err := fileutil.ListSubdirs(chainsDir)
 	if err != nil {
 		return err
 	}
@@ -56,8 +56,8 @@ func ResetBlockStore(blockStorageDir string) error {
 func DeleteBlockStoreIndex(blockStorageDir string) error {
 	conf := &Conf{blockStorageDir: blockStorageDir}
 	indexDir := conf.getIndexDir()
-	logger.Infof("Dropping the index dir [%s]... if present", indexDir)
-	return os.RemoveAll(indexDir)
+	logger.Infof("Dropping all contents under the index dir [%s]... if present", indexDir)
+	return fileutil.RemoveContents(indexDir)
 }
 
 func resetToGenesisBlk(ledgerDir string) error {
@@ -103,7 +103,7 @@ func retrieveGenesisBlkOffsetAndMakeACopy(ledgerDir string) (string, int64, erro
 		return "", -1, err
 	}
 	// just for an extra safety make a backup of genesis block
-	if err := ioutil.WriteFile(path.Join(ledgerDir, "__backupGenesisBlockBytes"), genesisBlockBytes, 0640); err != nil {
+	if err := ioutil.WriteFile(path.Join(ledgerDir, "__backupGenesisBlockBytes"), genesisBlockBytes, 0o640); err != nil {
 		return "", -1, err
 	}
 	logger.Infof("Genesis block backed up. Genesis block info file [%s], offset [%d]", blockfilePath, endOffsetGenesisBlock)
@@ -142,11 +142,11 @@ const (
 // the existing file (if present). This helps in achieving fail-safe behviour of reset utility
 func recordHeightIfGreaterThanPreviousRecording(ledgerDir string) error {
 	logger.Infof("Preparing to record current height for ledger at [%s]", ledgerDir)
-	checkpointInfo, err := constructCheckpointInfoFromBlockFiles(ledgerDir)
+	blkfilesInfo, err := constructBlockfilesInfo(ledgerDir)
 	if err != nil {
 		return err
 	}
-	logger.Infof("Loaded current info from blockfiles %#v", checkpointInfo)
+	logger.Infof("Loaded current info from blockfiles %#v", blkfilesInfo)
 	preResetHtFile := path.Join(ledgerDir, fileNamePreRestHt)
 	exists, err := pathExists(preResetHtFile)
 	logger.Infof("preResetHtFile already exists? = %t", exists)
@@ -164,12 +164,12 @@ func recordHeightIfGreaterThanPreviousRecording(ledgerDir string) error {
 		}
 		logger.Infof("preResetHtFile contains height = %d", previuoslyRecordedHt)
 	}
-	currentHt := checkpointInfo.lastBlockNumber + 1
+	currentHt := blkfilesInfo.lastPersistedBlock + 1
 	if currentHt > previuoslyRecordedHt {
 		logger.Infof("Recording current height [%d]", currentHt)
 		return ioutil.WriteFile(preResetHtFile,
 			[]byte(strconv.FormatUint(currentHt, 10)),
-			0640,
+			0o640,
 		)
 	}
 	logger.Infof("Not recording current height [%d] since this is less than previously recorded height [%d]",

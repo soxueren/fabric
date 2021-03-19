@@ -191,9 +191,9 @@ func TestRecordHeight(t *testing.T) {
 	fileInfo, err := os.Stat(lastFile)
 	require.NoError(t, err)
 	require.NoError(t, os.Truncate(lastFile, fileInfo.Size()/2))
-	checkpointInfo, err := constructCheckpointInfoFromBlockFiles(ledgerDir)
+	blkfilesInfo, err := constructBlockfilesInfo(ledgerDir)
 	require.NoError(t, err)
-	require.True(t, checkpointInfo.lastBlockNumber < 59)
+	require.True(t, blkfilesInfo.lastPersistedBlock < 59)
 	require.NoError(t, recordHeightIfGreaterThanPreviousRecording(ledgerDir))
 	assertRecordedHeight(t, ledgerDir, "60")
 }
@@ -232,8 +232,7 @@ func assertBlockStorePostReset(t *testing.T, store *BlockStore, originallyCommit
 	require.Equal(t, originallyCommittedBlocks[0], blk)
 
 	_, err = store.RetrieveBlockByNumber(1)
-	require.Error(t, err)
-	require.Equal(t, err, ErrNotFoundInIndex)
+	require.EqualError(t, err, "no such block number [1] in index")
 
 	err = store.AddBlock(originallyCommittedBlocks[0])
 	require.EqualError(t, err, "block number should have been 1 but was 0")

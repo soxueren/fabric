@@ -18,7 +18,7 @@ pull requests:
 The following tools are executed against all pull requests. Any errors flagged
 by these tools must be addressed before the code will be merged:
 
-  - `gofmt -s <https://golang.org/cmd/gofmt/>`__
+  - `gofumpt -s <https://github.com/mvdan/gofumpt>`__
   - `goimports <https://godoc.org/golang.org/x/tools/cmd/goimports>`__
   - `go vet <https://golang.org/cmd/vet/>`__
 
@@ -27,13 +27,19 @@ Testing
 
 Unit tests are expected to accompany all production code changes. These tests
 should be fast, provide very good coverage for new and modified code, and
-support parallel execution.
+support parallel execution (``go test -p``).
+
+We rely heavily on our tests to catch regressions and behavior changes. If code
+is not exercised by tests, it will likely be removed. That said, we know there
+are some areas of the code where we lack test coverage. If you need to make a
+change in one of these areas, tests to cover the impacted paths should be made
+before delivering features or fixes.
 
 Two matching libraries are commonly used in our tests. When modifying code,
 please use the matching library that has already been chosen for the package.
 
   - `gomega <https://onsi.github.io/gomega/>`__
-  - `testify/assert <https://godoc.org/github.com/stretchr/testify/assert>`__
+  - `testify/require <https://godoc.org/github.com/stretchr/testify/require>`__
 
 Any fixtures or data required by tests should generated or placed under version
 control. When fixtures are generated, they must be placed in a temporary

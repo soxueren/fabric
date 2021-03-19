@@ -17,7 +17,7 @@ import (
 	protopeer "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/internal/pkg/txflags"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // verifier provides functions that help tests with less verbose code for querying the ledger
@@ -25,18 +25,32 @@ import (
 // For the straight forward functions, tests can call them directly on the ledger
 type verifier struct {
 	lgr    ledger.PeerLedger
-	assert *assert.Assertions
+	assert *require.Assertions
 	t      *testing.T
 }
 
 func newVerifier(lgr ledger.PeerLedger, t *testing.T) *verifier {
-	return &verifier{lgr, assert.New(t), t}
+	return &verifier{lgr, require.New(t), t}
 }
 
 func (v *verifier) verifyLedgerHeight(expectedHt uint64) {
 	info, err := v.lgr.GetBlockchainInfo()
 	v.assert.NoError(err)
 	v.assert.Equal(expectedHt, info.Height)
+}
+
+func (v *verifier) verifyBlockchainInfo(expectedBCInfo *common.BlockchainInfo) {
+	info, err := v.lgr.GetBlockchainInfo()
+	v.assert.NoError(err)
+	v.assert.True(proto.Equal(expectedBCInfo, info))
+}
+
+func (v *verifier) verifyTXIDExists(txIDs ...string) {
+	for _, txID := range txIDs {
+		exists, err := v.lgr.TxIDExists(txID)
+		v.assert.NoError(err)
+		v.assert.True(exists)
+	}
 }
 
 func (v *verifier) verifyPubState(ns, key string, expectedVal string) {
@@ -51,6 +65,15 @@ func (v *verifier) verifyPubState(ns, key string, expectedVal string) {
 		expectedValBytes = []byte(expectedVal)
 	}
 	v.assert.Equal(expectedValBytes, committedVal)
+}
+
+func (v *verifier) verifyPvtdataHashState(ns, coll, key string, expectedValHash []byte) {
+	qe, err := v.lgr.NewQueryExecutor()
+	v.assert.NoError(err)
+	defer qe.Done()
+	committedValHash, err := qe.GetPrivateDataHash(ns, coll, key)
+	v.assert.NoError(err)
+	v.assert.Equal(expectedValHash, committedValHash)
 }
 
 func (v *verifier) verifyPvtState(ns, coll, key string, expectedVal string) {
@@ -88,6 +111,16 @@ func (v *verifier) verifyBlockAndPvtData(blockNum uint64, filter ledger.PvtNsCol
 	v.assert.NoError(err)
 	v.t.Logf("Retrieved Block = %s, pvtdata = %s", spew.Sdump(out.Block), spew.Sdump(out.PvtData))
 	verifyLogic(&retrievedBlockAndPvtdata{out, v.assert})
+}
+
+func (v *verifier) verifyInPvtdataStore(blockNum uint64, filter ledger.PvtNsCollFilter, expectedPvtdata []*ledger.TxPvtData) {
+	retrievedPvtdata, err := v.lgr.GetPvtDataByNum(blockNum, filter)
+	v.assert.NoError(err)
+	v.assert.Equal(len(expectedPvtdata), len(retrievedPvtdata))
+	for i := range expectedPvtdata {
+		v.assert.Equal(expectedPvtdata[i].SeqInBlock, retrievedPvtdata[i].SeqInBlock)
+		v.assert.True(proto.Equal(expectedPvtdata[i].WriteSet, retrievedPvtdata[i].WriteSet))
+	}
 }
 
 func (v *verifier) verifyBlockAndPvtDataSameAs(blockNum uint64, expectedOut *ledger.BlockAndPvtData) {
@@ -161,7 +194,7 @@ type expectedCollConfInfo struct {
 
 type retrievedBlockAndPvtdata struct {
 	*ledger.BlockAndPvtData
-	assert *assert.Assertions
+	assert *require.Assertions
 }
 
 func (r *retrievedBlockAndPvtdata) sameAs(expectedBlockAndPvtdata *ledger.BlockAndPvtData) {

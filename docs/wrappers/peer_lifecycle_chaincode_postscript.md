@@ -7,11 +7,13 @@ A chaincode needs to be packaged before it can be installed on your peers.
 This example uses the `peer lifecycle chaincode package` command to package
 a Go chaincode.
 
+  * Use the `--path` flag to indicate the location of the chaincode.
+    The path must be a fully qualified path or a path relative to your present working directory.
   * Use the `--label` flag to provide a chaincode package label of `myccv1`
     that your organization will use to identify the package.
 
     ```
-    peer lifecycle chaincode package mycc.tar.gz --path github.com/hyperledger/fabric-samples/chaincode/abstore/go/ --lang golang --label myccv1
+    peer lifecycle chaincode package mycc.tar.gz --path $CHAINCODE_DIR --lang golang --label myccv1
     ```
 
 ### peer lifecycle chaincode install example
@@ -226,7 +228,7 @@ also outputs which organizations have approved the chaincode definition. If an
 organization has approved the chaincode definition specified in the command, the
 command will return a value of true. You can use this command to learn whether enough
 channel members have approved a chaincode definition to meet the
-`Application/Channel/Endorsement` policy (a majority by default) before the
+`/Channel/Application/Endorsement` policy (a majority by default) before the
 definition can be committed to a channel.
 
   * Here is an example of the `peer lifecycle chaincode checkcommitreadiness` command,

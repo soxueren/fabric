@@ -11,16 +11,19 @@ import (
 	"path/filepath"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
 	"github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/snapshot"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/internal/fileutil"
 	"github.com/pkg/errors"
 )
 
-var logger = flogging.MustGetLogger("confighistory")
+var (
+	logger                 = flogging.MustGetLogger("confighistory")
+	importConfigsBatchSize = 1024 * 1024
+)
 
 const (
 	collectionConfigNamespace = "lscc" // lscc namespace was introduced in version 1.2 and we continue to use this in order to be compatible with existing data
@@ -29,44 +32,40 @@ const (
 	snapshotMetadataFileName  = "confighistory.metadata"
 )
 
-// Mgr should be registered as a state listener. The state listener builds the history and retriever helps in querying the history
-type Mgr interface {
-	ledger.StateListener
-	GetRetriever(ledgerID string, ledgerInfoRetriever LedgerInfoRetriever) *Retriever
-	Close()
-}
-
-type mgr struct {
+// Mgr manages the history of configurations such as chaincode's collection configurations.
+// It should be registered as a state listener. The state listener builds the history.
+type Mgr struct {
 	ccInfoProvider ledger.DeployedChaincodeInfoProvider
 	dbProvider     *dbProvider
 }
 
 // NewMgr constructs an instance that implements interface `Mgr`
-func NewMgr(dbPath string, ccInfoProvider ledger.DeployedChaincodeInfoProvider) (Mgr, error) {
+func NewMgr(dbPath string, ccInfoProvider ledger.DeployedChaincodeInfoProvider) (*Mgr, error) {
 	p, err := newDBProvider(dbPath)
 	if err != nil {
 		return nil, err
 	}
-	return &mgr{ccInfoProvider, p}, nil
+	return &Mgr{ccInfoProvider, p}, nil
 }
 
 // Name returns the name of the listener
-func (m *mgr) Name() string {
+func (m *Mgr) Name() string {
 	return "collection configuration history listener"
 }
 
-func (m *mgr) Initialize(ledgerID string, qe ledger.SimpleQueryExecutor) error {
+// Initialize implements function from the interface ledger.StateListener
+func (m *Mgr) Initialize(ledgerID string, qe ledger.SimpleQueryExecutor) error {
 	// Noop
 	return nil
 }
 
 // InterestedInNamespaces implements function from the interface ledger.StateListener
-func (m *mgr) InterestedInNamespaces() []string {
+func (m *Mgr) InterestedInNamespaces() []string {
 	return m.ccInfoProvider.Namespaces()
 }
 
 // StateCommitDone implements function from the interface ledger.StateListener
-func (m *mgr) StateCommitDone(ledgerID string) {
+func (m *Mgr) StateCommitDone(ledgerID string) {
 	// Noop
 }
 
@@ -74,7 +73,7 @@ func (m *mgr) StateCommitDone(ledgerID string) {
 // In this implementation, the latest collection config package is retrieved via
 // ledger.DeployedChaincodeInfoProvider and is persisted as a separate entry in a separate db.
 // The composite key for the entry is a tuple of <blockNum, namespace, key>
-func (m *mgr) HandleStateUpdates(trigger *ledger.StateUpdateTrigger) error {
+func (m *Mgr) HandleStateUpdates(trigger *ledger.StateUpdateTrigger) error {
 	updatedCCs, err := m.ccInfoProvider.UpdatedChaincodes(extractPublicUpdates(trigger.StateUpdates))
 	if err != nil {
 		return err
@@ -101,71 +100,109 @@ func (m *mgr) HandleStateUpdates(trigger *ledger.StateUpdateTrigger) error {
 	if len(updatedCollConfigs) == 0 {
 		return nil
 	}
-	batch, err := prepareDBBatch(updatedCollConfigs, trigger.CommittingBlockNum)
+	dbHandle := m.dbProvider.getDB(trigger.LedgerID)
+	batch := dbHandle.newBatch()
+	err = prepareDBBatch(batch, updatedCollConfigs, trigger.CommittingBlockNum)
 	if err != nil {
 		return err
 	}
-	dbHandle := m.dbProvider.getDB(trigger.LedgerID)
 	return dbHandle.writeBatch(batch, true)
 }
 
+// ImportConfigHistory imports the collection config history associated with a given
+// ledgerID from the snapshot files present in the dir
+func (m *Mgr) ImportFromSnapshot(ledgerID string, dir string) error {
+	exist, _, err := fileutil.FileExists(filepath.Join(dir, snapshotDataFileName))
+	if err != nil {
+		return err
+	}
+	if !exist {
+		// when the ledger being bootstapped never had a private data collection for
+		// any chaincode, the snapshot files associated with the confighistory store
+		// will not be present in the snapshot directory. Hence, we can return early
+		return nil
+	}
+	db := m.dbProvider.getDB(ledgerID)
+	empty, err := db.IsEmpty()
+	if err != nil {
+		return err
+	}
+	if !empty {
+		return errors.New(fmt.Sprintf(
+			"config history for ledger [%s] exists. Incremental import is not supported. "+
+				"Remove the existing ledger data before retry",
+			ledgerID,
+		))
+	}
+
+	configMetadata, err := snapshot.OpenFile(filepath.Join(dir, snapshotMetadataFileName), snapshotFileFormat)
+	if err != nil {
+		return err
+	}
+	numCollectionConfigs, err := configMetadata.DecodeUVarInt()
+	if err != nil {
+		return err
+	}
+	collectionConfigData, err := snapshot.OpenFile(filepath.Join(dir, snapshotDataFileName), snapshotFileFormat)
+	if err != nil {
+		return err
+	}
+
+	batch := db.NewUpdateBatch()
+	currentBatchSize := 0
+	for i := uint64(0); i < numCollectionConfigs; i++ {
+		key, err := collectionConfigData.DecodeBytes()
+		if err != nil {
+			return err
+		}
+		val, err := collectionConfigData.DecodeBytes()
+		if err != nil {
+			return err
+		}
+		batch.Put(key, val)
+		currentBatchSize += len(key) + len(val)
+		if currentBatchSize >= importConfigsBatchSize {
+			if err := db.WriteBatch(batch, true); err != nil {
+				return err
+			}
+			currentBatchSize = 0
+			batch.Reset()
+		}
+	}
+	return db.WriteBatch(batch, true)
+}
+
 // GetRetriever returns an implementation of `ledger.ConfigHistoryRetriever` for the given ledger id.
-func (m *mgr) GetRetriever(ledgerID string, ledgerInfoRetriever LedgerInfoRetriever) *Retriever {
+func (m *Mgr) GetRetriever(ledgerID string) *Retriever {
 	return &Retriever{
-		ledgerInfoRetriever:    ledgerInfoRetriever,
-		ledgerID:               ledgerID,
-		deployedCCInfoProvider: m.ccInfoProvider,
-		dbHandle:               m.dbProvider.getDB(ledgerID),
+		ledgerID: ledgerID,
+		dbHandle: m.dbProvider.getDB(ledgerID),
 	}
 }
 
 // Close implements the function in the interface 'Mgr'
-func (m *mgr) Close() {
+func (m *Mgr) Close() {
 	m.dbProvider.Close()
 }
 
+// Drop drops channel-specific data from the config history db
+func (m *Mgr) Drop(ledgerid string) error {
+	return m.dbProvider.Drop(ledgerid)
+}
+
+// Retriever helps consumer retrieve collection config history
 type Retriever struct {
-	ledgerInfoRetriever    LedgerInfoRetriever
-	ledgerID               string
-	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider
-	dbHandle               *db
+	ledgerID string
+	dbHandle *db
 }
 
 // MostRecentCollectionConfigBelow implements function from the interface ledger.ConfigHistoryRetriever
 func (r *Retriever) MostRecentCollectionConfigBelow(blockNum uint64, chaincodeName string) (*ledger.CollectionConfigInfo, error) {
 	compositeKV, err := r.dbHandle.mostRecentEntryBelow(blockNum, collectionConfigNamespace, constructCollectionConfigKey(chaincodeName))
-	if err != nil {
+	if err != nil || compositeKV == nil {
 		return nil, err
 	}
-	implicitColls, err := r.getImplicitCollection(chaincodeName)
-	if err != nil {
-		return nil, err
-	}
-
-	return constructCollectionConfigInfo(compositeKV, implicitColls)
-}
-
-// CollectionConfigAt implements function from the interface ledger.ConfigHistoryRetriever
-func (r *Retriever) CollectionConfigAt(blockNum uint64, chaincodeName string) (*ledger.CollectionConfigInfo, error) {
-	info, err := r.ledgerInfoRetriever.GetBlockchainInfo()
-	if err != nil {
-		return nil, err
-	}
-	maxCommittedBlockNum := info.Height - 1
-	if maxCommittedBlockNum < blockNum {
-		return nil, &ledger.ErrCollectionConfigNotYetAvailable{MaxBlockNumCommitted: maxCommittedBlockNum,
-			Msg: fmt.Sprintf("The maximum block number committed [%d] is less than the requested block number [%d]", maxCommittedBlockNum, blockNum)}
-	}
-
-	compositeKV, err := r.dbHandle.entryAt(blockNum, collectionConfigNamespace, constructCollectionConfigKey(chaincodeName))
-	if err != nil {
-		return nil, err
-	}
-	implicitColls, err := r.getImplicitCollection(chaincodeName)
-	if err != nil {
-		return nil, err
-	}
-	return constructCollectionConfigInfo(compositeKV, implicitColls)
+	return compositeKVToCollectionConfig(compositeKV)
 }
 
 // ExportConfigHistory exports configuration history from the confighistoryDB to
@@ -181,16 +218,14 @@ func (r *Retriever) CollectionConfigAt(blockNum uint64, chaincodeName string) (*
 // extra bytes. Further, the collection config namespace is not expected to have
 // millions of entries.
 func (r *Retriever) ExportConfigHistory(dir string, newHashFunc snapshot.NewHashFunc) (map[string][]byte, error) {
-	nsItr := r.dbHandle.getNamespaceIterator(collectionConfigNamespace)
-	if err := nsItr.Error(); err != nil {
-		return nil, errors.Wrap(err, "internal leveldb error while obtaining db iterator")
-
+	nsItr, err := r.dbHandle.getNamespaceIterator(collectionConfigNamespace)
+	if err != nil {
+		return nil, err
 	}
 	defer nsItr.Release()
 
 	var numCollectionConfigs uint64 = 0
 	var dataFileWriter *snapshot.FileWriter
-	var err error
 	for nsItr.Next() {
 		if err := nsItr.Error(); err != nil {
 			return nil, errors.Wrap(err, "internal leveldb error while iterating for collection config history")
@@ -238,27 +273,17 @@ func (r *Retriever) ExportConfigHistory(dir string, newHashFunc snapshot.NewHash
 	}, nil
 }
 
-func (r *Retriever) getImplicitCollection(chaincodeName string) ([]*peer.StaticCollectionConfig, error) {
-	qe, err := r.ledgerInfoRetriever.NewQueryExecutor()
-	if err != nil {
-		return nil, err
-	}
-	defer qe.Done()
-	return r.deployedCCInfoProvider.ImplicitCollections(r.ledgerID, chaincodeName, qe)
-}
-
-func prepareDBBatch(chaincodeCollConfigs map[string]*peer.CollectionConfigPackage, committingBlockNum uint64) (*batch, error) {
-	batch := newBatch()
+func prepareDBBatch(batch *batch, chaincodeCollConfigs map[string]*peer.CollectionConfigPackage, committingBlockNum uint64) error {
 	for ccName, collConfig := range chaincodeCollConfigs {
 		key := constructCollectionConfigKey(ccName)
 		var configBytes []byte
 		var err error
 		if configBytes, err = proto.Marshal(collConfig); err != nil {
-			return nil, errors.WithStack(err)
+			return errors.WithStack(err)
 		}
 		batch.add(collectionConfigNamespace, key, committingBlockNum, configBytes)
 	}
-	return batch, nil
+	return nil
 }
 
 func compositeKVToCollectionConfig(compositeKV *compositeKV) (*ledger.CollectionConfigInfo, error) {
@@ -282,41 +307,4 @@ func extractPublicUpdates(stateUpdates ledger.StateUpdates) map[string][]*kvrwse
 		m[ns] = updates.PublicUpdates
 	}
 	return m
-}
-
-func constructCollectionConfigInfo(
-	compositeKV *compositeKV,
-	implicitColls []*peer.StaticCollectionConfig,
-) (*ledger.CollectionConfigInfo, error) {
-	var collConf *ledger.CollectionConfigInfo
-	var err error
-
-	if compositeKV == nil && len(implicitColls) == 0 {
-		return nil, nil
-	}
-
-	collConf = &ledger.CollectionConfigInfo{
-		CollectionConfig: &peer.CollectionConfigPackage{},
-	}
-	if compositeKV != nil {
-		if collConf, err = compositeKVToCollectionConfig(compositeKV); err != nil {
-			return nil, err
-		}
-	}
-
-	for _, implicitColl := range implicitColls {
-		cc := &peer.CollectionConfig{}
-		cc.Payload = &peer.CollectionConfig_StaticCollectionConfig{StaticCollectionConfig: implicitColl}
-		collConf.CollectionConfig.Config = append(
-			collConf.CollectionConfig.Config,
-			cc,
-		)
-	}
-	return collConf, nil
-}
-
-// LedgerInfoRetriever retrieves the relevant info from ledger
-type LedgerInfoRetriever interface {
-	GetBlockchainInfo() (*common.BlockchainInfo, error)
-	NewQueryExecutor() (ledger.QueryExecutor, error)
 }

@@ -14,8 +14,6 @@ import (
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/channelconfig"
-	cc "github.com/hyperledger/fabric/common/config"
-	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/deliver"
 	"github.com/hyperledger/fabric/common/flogging"
 	commonledger "github.com/hyperledger/fabric/common/ledger"
@@ -34,7 +32,6 @@ import (
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	"github.com/hyperledger/fabric/core/transientstore"
 	"github.com/hyperledger/fabric/gossip/api"
-	gossipprivdata "github.com/hyperledger/fabric/gossip/privdata"
 	gossipservice "github.com/hyperledger/fabric/gossip/service"
 	"github.com/hyperledger/fabric/internal/pkg/comm"
 	"github.com/hyperledger/fabric/internal/pkg/peer/orderers"
@@ -53,12 +50,6 @@ type CollectionInfoShim struct {
 
 func (cis *CollectionInfoShim) CollectionValidationInfo(chaincodeName, collectionName string, validationState validation.State) ([]byte, error, error) {
 	return cis.CollectionAndLifecycleResources.CollectionValidationInfo(cis.ChannelID, chaincodeName, collectionName, validationState)
-}
-
-type gossipSupport struct {
-	channelconfig.Application
-	configtx.Validator
-	channelconfig.Channel
 }
 
 func ConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, error) {
@@ -148,29 +139,7 @@ func (flbs fileLedgerBlockStore) RetrieveBlocks(startBlockNumber uint64) (common
 	return flbs.GetBlocksIterator(startBlockNumber)
 }
 
-// NewConfigSupport returns
-func NewConfigSupport(peer *Peer) cc.Manager {
-	return &configSupport{
-		peer: peer,
-	}
-}
-
-type configSupport struct {
-	peer *Peer
-}
-
-// GetChannelConfig returns an instance of a object that represents
-// current channel configuration tree of the specified channel. The
-// ConfigProto method of the returned object can be used to get the
-// proto representing the channel configuration.
-func (c *configSupport) GetChannelConfig(cid string) cc.Config {
-	channel := c.peer.Channel(cid)
-	if channel == nil {
-		peerLogger.Errorf("[channel %s] channel not associated with this peer", cid)
-		return nil
-	}
-	return channel.Resources().ConfigtxValidator()
-}
+func (flbs fileLedgerBlockStore) Shutdown() {}
 
 // A Peer holds references to subsystems and channels associated with a Fabric peer.
 type Peer struct {
@@ -224,8 +193,31 @@ func (p *Peer) CreateChannel(
 	return nil
 }
 
-// retrievePersistedChannelConfig retrieves the persisted channel config from statedb
-func retrievePersistedChannelConfig(ledger ledger.PeerLedger) (*common.Config, error) {
+// CreateChannelFromSnapshot creates a channel from the specified snapshot.
+func (p *Peer) CreateChannelFromSnapshot(
+	snapshotDir string,
+	deployedCCInfoProvider ledger.DeployedChaincodeInfoProvider,
+	legacyLifecycleValidation plugindispatcher.LifecycleResources,
+	newLifecycleValidation plugindispatcher.CollectionAndLifecycleResources,
+) error {
+	channelCallback := func(l ledger.PeerLedger, cid string) {
+		if err := p.createChannel(cid, l, deployedCCInfoProvider, legacyLifecycleValidation, newLifecycleValidation); err != nil {
+			logger.Errorf("error creating channel for %s", cid)
+			return
+		}
+		p.initChannel(cid)
+	}
+
+	err := p.LedgerMgr.CreateLedgerFromSnapshot(snapshotDir, channelCallback)
+	if err != nil {
+		return errors.WithMessagef(err, "cannot create ledger from snapshot %s", snapshotDir)
+	}
+
+	return nil
+}
+
+// RetrievePersistedChannelConfig retrieves the persisted channel config from statedb
+func RetrievePersistedChannelConfig(ledger ledger.PeerLedger) (*common.Config, error) {
 	qe, err := ledger.NewQueryExecutor()
 	if err != nil {
 		return nil, err
@@ -242,7 +234,7 @@ func (p *Peer) createChannel(
 	legacyLifecycleValidation plugindispatcher.LifecycleResources,
 	newLifecycleValidation plugindispatcher.CollectionAndLifecycleResources,
 ) error {
-	chanConf, err := retrievePersistedChannelConfig(l)
+	chanConf, err := RetrievePersistedChannelConfig(l)
 	if err != nil {
 		return err
 	}
@@ -261,13 +253,13 @@ func (p *Peer) createChannel(
 	gossipCallbackWrapper := func(bundle *channelconfig.Bundle) {
 		ac, ok := bundle.ApplicationConfig()
 		if !ok {
-			// TODO, handle a missing ApplicationConfig more gracefully
 			ac = nil
 		}
-		gossipEventer.ProcessConfigUpdate(&gossipSupport{
-			Validator:   bundle.ConfigtxValidator(),
-			Application: ac,
-			Channel:     bundle.ChannelConfig(),
+		gossipEventer.ProcessConfigUpdate(gossipservice.ConfigUpdate{
+			ChannelID:        bundle.ConfigtxValidator().ChannelID(),
+			Organizations:    ac.Organizations(),
+			OrdererAddresses: bundle.ChannelConfig().OrdererAddresses(),
+			Sequence:         bundle.ConfigtxValidator().Sequence(),
 		})
 		p.GossipService.SuspectPeers(func(identity api.PeerIdentityType) bool {
 			// TODO: this is a place-holder that would somehow make the MSP layer suspect
@@ -360,15 +352,16 @@ func (p *Peer) createChannel(
 	}
 	channel.store = store
 
-	simpleCollectionStore := privdata.NewSimpleCollectionStore(l, deployedCCInfoProvider)
+	var idDeserializerFactory privdata.IdentityDeserializerFactoryFunc = func(channelID string) msp.IdentityDeserializer {
+		return p.Channel(channelID).MSPManager()
+	}
+	simpleCollectionStore := privdata.NewSimpleCollectionStore(l, deployedCCInfoProvider, idDeserializerFactory)
 	p.GossipService.InitializeChannel(bundle.ConfigtxValidator().ChannelID(), ordererSource, store, gossipservice.Support{
-		Validator:       validator,
-		Committer:       committer,
-		CollectionStore: simpleCollectionStore,
-		IdDeserializeFactory: gossipprivdata.IdentityDeserializerFactoryFunc(func(chainID string) msp.IdentityDeserializer {
-			return mspmgmt.GetManagerForChain(chainID)
-		}),
-		CapabilityProvider: channel,
+		Validator:            validator,
+		Committer:            committer,
+		CollectionStore:      simpleCollectionStore,
+		IdDeserializeFactory: idDeserializerFactory,
+		CapabilityProvider:   channel,
 	})
 
 	p.mutex.Lock()
@@ -453,6 +446,11 @@ func (p *Peer) GetPolicyManager(cid string) policies.Manager {
 		return c.Resources().PolicyManager()
 	}
 	return nil
+}
+
+// JoinBySnaphotStatus queries ledger mgr to get the status of joinbysnapshot
+func (p *Peer) JoinBySnaphotStatus() *pb.JoinBySnapshotStatus {
+	return p.LedgerMgr.JoinBySnapshotStatus()
 }
 
 // initChannel takes care to initialize channel after peer joined, for example deploys system CCs

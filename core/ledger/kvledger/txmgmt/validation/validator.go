@@ -25,7 +25,6 @@ type validator struct {
 // preLoadCommittedVersionOfRSet loads committed version of all keys in each
 // transaction's read set into a cache.
 func (v *validator) preLoadCommittedVersionOfRSet(blk *block) error {
-
 	// Collect both public and hashed keys in read sets of all transactions in a given block
 	var pubKeys []*statedb.CompositeKey
 	var hashedKeys []*privacyenabledstate.HashedCompositeKey
@@ -102,7 +101,9 @@ func (v *validator) validateAndPrepareBatch(blk *block, doMVCCValidation bool) (
 		if validationCode == peer.TxValidationCode_VALID {
 			logger.Debugf("Block [%d] Transaction index [%d] TxId [%s] marked as valid by state validator. ContainsPostOrderWrites [%t]", blk.num, tx.indexInBlock, tx.id, tx.containsPostOrderWrites)
 			committingTxHeight := version.NewHeight(blk.num, uint64(tx.indexInBlock))
-			updates.applyWriteSet(tx.rwset, committingTxHeight, v.db, tx.containsPostOrderWrites)
+			if err := updates.applyWriteSet(tx.rwset, committingTxHeight, v.db, tx.containsPostOrderWrites); err != nil {
+				return nil, err
+			}
 		} else {
 			logger.Warningf("Block [%d] Transaction index [%d] TxId [%s] marked as invalid by state validator. Reason code [%s]",
 				blk.num, tx.indexInBlock, tx.id, validationCode.String())
@@ -116,10 +117,9 @@ func (v *validator) validateEndorserTX(
 	txRWSet *rwsetutil.TxRwSet,
 	doMVCCValidation bool,
 	updates *publicAndHashUpdates) (peer.TxValidationCode, error) {
-
-	var validationCode = peer.TxValidationCode_VALID
+	validationCode := peer.TxValidationCode_VALID
 	var err error
-	//mvcc validation, may invalidate transaction
+	// mvcc validation, may invalidate transaction
 	if doMVCCValidation {
 		validationCode, err = v.validateTx(txRWSet, updates)
 	}
@@ -128,7 +128,7 @@ func (v *validator) validateEndorserTX(
 
 func (v *validator) validateTx(txRWSet *rwsetutil.TxRwSet, updates *publicAndHashUpdates) (peer.TxValidationCode, error) {
 	// Uncomment the following only for local debugging. Don't want to print data in the logs in production
-	//logger.Debugf("validateTx - validating txRWSet: %s", spew.Sdump(txRWSet))
+	// logger.Debugf("validateTx - validating txRWSet: %s", spew.Sdump(txRWSet))
 	for _, nsRWSet := range txRWSet.NsRwSets {
 		ns := nsRWSet.NameSpace
 		// Validate public reads
@@ -228,7 +228,9 @@ func (v *validator) validateRangeQuery(ns string, rangeQueryInfo *kvrwset.RangeQ
 		logger.Debug(`Hashing results are not present in the range query info hence, initiating raw KVReads based validation`)
 		qv = &rangeQueryResultsValidator{}
 	}
-	qv.init(rangeQueryInfo, combinedItr)
+	if err := qv.init(rangeQueryInfo, combinedItr); err != nil {
+		return false, err
+	}
 	return qv.validate()
 }
 

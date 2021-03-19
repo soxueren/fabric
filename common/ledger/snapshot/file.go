@@ -40,7 +40,7 @@ func CreateFile(filePath string, dataformat byte, newHashFunc NewHashFunc) (*Fil
 	}
 	// create the file only if it does not already exist.
 	// set the permission mode to read-only, as once the file is closed, we do not support modifying the file
-	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0444)
+	file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o444)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error while creating the snapshot file: %s", filePath)
 	}
@@ -206,7 +206,7 @@ func (r *FileReader) decodeBytes() ([]byte, error) {
 	if len(r.reusableByteSlice) < size {
 		r.reusableByteSlice = make([]byte, size)
 	}
-	if _, err := r.bufReader.Read(r.reusableByteSlice[0:size]); err != nil {
+	if _, err := io.ReadFull(r.bufReader, r.reusableByteSlice[0:size]); err != nil {
 		return nil, errors.Wrapf(err, "error while reading from snapshot file: %s", r.file.Name())
 	}
 	return r.reusableByteSlice[0:size], nil

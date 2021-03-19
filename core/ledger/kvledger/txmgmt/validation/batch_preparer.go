@@ -41,10 +41,11 @@ type CommitBatchPreparer struct {
 
 // TxStatInfo encapsulates information about a transaction
 type TxStatInfo struct {
-	ValidationCode peer.TxValidationCode
-	TxType         common.HeaderType
-	ChaincodeID    *peer.ChaincodeID
-	NumCollections int
+	TxIDFromChannelHeader string
+	ValidationCode        peer.TxValidationCode
+	TxType                common.HeaderType
+	ChaincodeID           *peer.ChaincodeID
+	NumCollections        int
 }
 
 // NewCommitBatchPreparer constructs a validator that internally manages statebased validator and in addition
@@ -97,7 +98,6 @@ func (p *CommitBatchPreparer) ValidateAndPrepareBatch(blockAndPvtdata *ledger.Bl
 		p.db,
 		pubAndHashUpdates,
 		blockAndPvtdata.PvtData,
-		p.customTxProcessors,
 	); err != nil {
 		return nil, nil, err
 	}
@@ -124,9 +124,7 @@ func validateAndPreparePvtBatch(
 	db *privacyenabledstate.DB,
 	pubAndHashUpdates *publicAndHashUpdates,
 	pvtdata map[uint64]*ledger.TxPvtData,
-	customTxProcessors map[common.HeaderType]ledger.CustomTxProcessor,
 ) (*privacyenabledstate.PvtUpdateBatch, error) {
-
 	pvtUpdates := privacyenabledstate.NewPvtUpdateBatch()
 	metadataUpdates := metadataUpdates{}
 	for _, tx := range blk.txs {
@@ -210,6 +208,7 @@ func preprocessProtoBlock(postOrderSimulatorProvider PostOrderSimulatorProvider,
 				chdr, err = protoutil.UnmarshalChannelHeader(payload.Header.ChannelHeader)
 			}
 		}
+		txStatInfo.TxIDFromChannelHeader = chdr.GetTxId()
 		if txsFilter.IsInvalid(txIndex) {
 			// Skipping invalid transaction
 			logger.Warningf("Channel [%s]: Block [%d] Transaction index [%d] TxId [%s]"+
@@ -342,7 +341,7 @@ func addPvtRWSetToPvtUpdateBatch(pvtRWSet *rwsetutil.TxPvtRwSet, pvtUpdateBatch 
 	for _, ns := range pvtRWSet.NsPvtRwSet {
 		for _, coll := range ns.CollPvtRwSets {
 			for _, kvwrite := range coll.KvRwSet.Writes {
-				if !kvwrite.IsDelete {
+				if !rwsetutil.IsKVWriteDelete(kvwrite) {
 					pvtUpdateBatch.Put(ns.NameSpace, coll.CollectionName, kvwrite.Key, kvwrite.Value, ver)
 				} else {
 					pvtUpdateBatch.Delete(ns.NameSpace, coll.CollectionName, kvwrite.Key, ver)
@@ -362,7 +361,6 @@ func incrementPvtdataVersionIfNeeded(
 	pvtUpdateBatch *privacyenabledstate.PvtUpdateBatch,
 	pubAndHashUpdates *publicAndHashUpdates,
 	db *privacyenabledstate.DB) error {
-
 	for collKey := range metadataUpdates {
 		ns, coll, key := collKey.ns, collKey.coll, collKey.key
 		keyHash := util.ComputeStringHash(key)
